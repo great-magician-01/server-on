@@ -26,9 +26,17 @@ fn embed_windows_icon() {
     let rc_file = out_dir.join("server-on.rc");
     let resource_file = out_dir.join("server-on.res");
     let rc_icon = icon.to_string_lossy().replace('\\', "/");
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let numeric: Vec<&str> = version.split(['.', '-']).collect();
+    let file_version = format!(
+        "{},{},{},0",
+        numeric.first().copied().unwrap_or("0"),
+        numeric.get(1).copied().unwrap_or("0"),
+        numeric.get(2).copied().unwrap_or("0"),
+    );
     let rc = format!(
-        "#include <winver.h>\n1 ICON \"{}\"\n1 VERSIONINFO\nFILEVERSION 0,1,0,0\nPRODUCTVERSION 0,1,0,0\nFILEFLAGSMASK 0x3fL\nFILEFLAGS 0x0L\nFILEOS 0x40004L\nFILETYPE 0x1L\nFILESUBTYPE 0x0L\nBEGIN\n  BLOCK \"StringFileInfo\"\n  BEGIN\n    BLOCK \"040904b0\"\n    BEGIN\n      VALUE \"CompanyName\", \"ServerOn\"\n      VALUE \"FileDescription\", \"ServerOn Local Service Manager\"\n      VALUE \"FileVersion\", \"0.1.0\"\n      VALUE \"InternalName\", \"server-on\"\n      VALUE \"OriginalFilename\", \"server-on.exe\"\n      VALUE \"ProductName\", \"ServerOn\"\n      VALUE \"ProductVersion\", \"0.1.0\"\n    END\n  END\n  BLOCK \"VarFileInfo\"\n  BEGIN\n    VALUE \"Translation\", 0x409, 1200\n  END\nEND\n",
-        rc_icon
+        "#include <winver.h>\n1 ICON \"{}\"\n1 VERSIONINFO\nFILEVERSION {}\nPRODUCTVERSION {}\nFILEFLAGSMASK 0x3fL\nFILEFLAGS 0x0L\nFILEOS 0x40004L\nFILETYPE 0x1L\nFILESUBTYPE 0x0L\nBEGIN\n  BLOCK \"StringFileInfo\"\n  BEGIN\n    BLOCK \"040904b0\"\n    BEGIN\n      VALUE \"CompanyName\", \"ServerOn\"\n      VALUE \"FileDescription\", \"ServerOn Local Service Manager\"\n      VALUE \"FileVersion\", \"{}\"\n      VALUE \"InternalName\", \"server-on\"\n      VALUE \"OriginalFilename\", \"server-on.exe\"\n      VALUE \"ProductName\", \"ServerOn\"\n      VALUE \"ProductVersion\", \"{}\"\n    END\n  END\n  BLOCK \"VarFileInfo\"\n  BEGIN\n    VALUE \"Translation\", 0x409, 1200\n  END\nEND\n",
+        rc_icon, file_version, file_version, version, version
     );
     fs::write(&rc_file, rc).expect("failed to write Windows resource script");
     let rc_exe =

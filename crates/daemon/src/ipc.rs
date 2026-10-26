@@ -149,7 +149,7 @@ async fn write_server_message(
 #[cfg(windows)]
 fn create_server(name: &str, first: bool) -> io::Result<NamedPipeServer> {
     use std::ffi::c_void;
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
     use windows::Win32::Foundation::{CloseHandle, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -222,7 +222,6 @@ fn create_server(name: &str, first: bool) -> io::Result<NamedPipeServer> {
         )
     };
     unsafe { LocalFree(Some(HLOCAL(descriptor.0))) };
-    let _ = null::<u8>();
     result
 }
 

@@ -553,30 +553,42 @@ impl AppConfig {
                     });
                 }
             }
-            detect_dependency_cycle(service, &self.services, &mut Vec::new())?;
+        }
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        for service in &self.services {
+            detect_dependency_cycle(service, &self.services, &mut visiting, &mut visited)?;
         }
         Ok(())
     }
 }
 
+// Depth-first cycle detection with memoization: `visiting` holds the nodes on
+// the current DFS path (a revisit there means a cycle), `visited` the nodes
+// already proven acyclic so each service is walked only once.
 fn detect_dependency_cycle(
     service: &ServiceDefinition,
     services: &[ServiceDefinition],
-    path: &mut Vec<ServiceId>,
+    visiting: &mut BTreeSet<ServiceId>,
+    visited: &mut BTreeSet<ServiceId>,
 ) -> Result<(), ConfigError> {
-    if path.contains(&service.id) {
+    if visiting.contains(&service.id) {
         return Err(ConfigError::DependencyCycle(service.id.to_string()));
     }
-    path.push(service.id.clone());
+    if visited.contains(&service.id) {
+        return Ok(());
+    }
+    visited.insert(service.id.clone());
+    visiting.insert(service.id.clone());
     for dependency in &service.depends_on {
         if let Some(parent) = services
             .iter()
             .find(|candidate| &candidate.id == dependency.service_id())
         {
-            detect_dependency_cycle(parent, services, path)?;
+            detect_dependency_cycle(parent, services, visiting, visited)?;
         }
     }
-    path.pop();
+    visiting.remove(&service.id);
     Ok(())
 }
 
