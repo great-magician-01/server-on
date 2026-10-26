@@ -13,7 +13,9 @@ use windows::Win32::Foundation::{
     CloseHandle, FILETIME, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
-use windows::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+use windows::Win32::System::Console::{
+    AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleWindow,
+};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next, TH32CS_SNAPPROCESS,
 };
@@ -332,9 +334,17 @@ impl WindowsProcessController {
         if self.active_processes()? == 0 {
             return Ok(());
         }
-        // A hidden, dedicated console lets console applications handle Ctrl+Break.
-        // If they do not exit before the deadline, the entire job is terminated.
-        let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, self.pid) };
+        // The service runs in its own hidden console, so it can only receive
+        // console control events while this daemon is attached to that same
+        // console. If the signal cannot be delivered, fall through and let
+        // the deadline terminate the entire job.
+        if let Err(error) = send_ctrl_break(self.pid) {
+            tracing::warn!(
+                pid = self.pid,
+                %error,
+                "无法发送 Ctrl+Break，超时后将强制结束整个 Job"
+            );
+        }
         let deadline = tokio::time::Instant::now() + timeout;
         while tokio::time::Instant::now() < deadline {
             if self.active_processes()? == 0 {
@@ -364,6 +374,25 @@ impl WindowsProcessController {
         let mut code = 0;
         unsafe { GetExitCodeProcess(process.0, &mut code)? };
         Ok(code as i32)
+    }
+}
+
+/// Deliver CTRL+BREAK to the service's process group.
+///
+/// Console control events are scoped to a console: the daemon (started
+/// without one) must temporarily attach to the service's console before the
+/// signal can reach it. Attaching is per-process and short-lived; we always
+/// detach again so the daemon returns to its console-less state.
+fn send_ctrl_break(pid: u32) -> Result<()> {
+    unsafe {
+        if !GetConsoleWindow().0.is_null() {
+            bail!("daemon 自身已有控制台（通常为前台调试运行），无法附着服务控制台");
+        }
+        AttachConsole(pid).context("附着服务控制台失败")?;
+        let result =
+            GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid).context("发送 CTRL_BREAK 失败");
+        let _ = FreeConsole();
+        result
     }
 }
 
