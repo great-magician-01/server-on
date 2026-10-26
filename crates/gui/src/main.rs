@@ -13,6 +13,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak, invoke_from_
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::runtime::Handle;
 
 mod metrics;
@@ -561,54 +562,69 @@ async fn watch_events(context: AppContext) {
             return;
         }
     };
+    // Log lines arrive in bursts; rebuild the Slint model at most every 200ms
+    // instead of once per line.
+    let mut log_flush = tokio::time::interval(Duration::from_millis(200));
+    log_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut logs_dirty = false;
     loop {
-        match events.recv().await {
-            Ok(DaemonEvent::Log(log)) => {
-                let selected = context.shared.lock().unwrap().selected_id.clone();
-                if selected == log.service_id.as_str() {
-                    let mut shared = context.shared.lock().unwrap();
-                    shared.logs.push(log);
-                    if shared.logs.len() > 2_000 {
-                        let excess = shared.logs.len() - 2_000;
-                        shared.logs.drain(..excess);
+        tokio::select! {
+            event = events.recv() => {
+                match event {
+                    Ok(DaemonEvent::Log(log)) => {
+                        let selected = context.shared.lock().unwrap().selected_id.clone();
+                        if selected == log.service_id.as_str() {
+                            let mut shared = context.shared.lock().unwrap();
+                            shared.logs.push(log);
+                            if shared.logs.len() > 2_000 {
+                                let excess = shared.logs.len() - 2_000;
+                                shared.logs.drain(..excess);
+                            }
+                            drop(shared);
+                            logs_dirty = true;
+                        }
                     }
-                    drop(shared);
+                    Ok(DaemonEvent::ServiceUpdated(view)) => {
+                        let mut shared = context.shared.lock().unwrap();
+                        if let Some(existing) = shared
+                            .snapshot
+                            .services
+                            .iter_mut()
+                            .find(|service| service.definition.id == view.definition.id)
+                        {
+                            *existing = *view;
+                        } else {
+                            shared.snapshot.services.push(*view);
+                        }
+                        drop(shared);
+                        context.render_shared_async();
+                    }
+                    Ok(DaemonEvent::ServiceRemoved(service_id)) => {
+                        context
+                            .shared
+                            .lock()
+                            .unwrap()
+                            .snapshot
+                            .services
+                            .retain(|service| service.definition.id != service_id);
+                        context.render_shared_async();
+                    }
+                    Ok(DaemonEvent::OperationCompleted { .. })
+                    | Ok(DaemonEvent::DiscoveryCompleted { .. }) => {
+                        let _ = refresh_snapshot(context.clone()).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        context.set_connection(false, "守护进程事件连接已断开".into());
+                        break;
+                    }
+                }
+            }
+            _ = log_flush.tick() => {
+                if logs_dirty {
+                    logs_dirty = false;
                     context.set_logs_async();
                 }
-            }
-            Ok(DaemonEvent::ServiceUpdated(view)) => {
-                let mut shared = context.shared.lock().unwrap();
-                if let Some(existing) = shared
-                    .snapshot
-                    .services
-                    .iter_mut()
-                    .find(|service| service.definition.id == view.definition.id)
-                {
-                    *existing = *view;
-                } else {
-                    shared.snapshot.services.push(*view);
-                }
-                drop(shared);
-                context.render_shared_async();
-            }
-            Ok(DaemonEvent::ServiceRemoved(service_id)) => {
-                context
-                    .shared
-                    .lock()
-                    .unwrap()
-                    .snapshot
-                    .services
-                    .retain(|service| service.definition.id != service_id);
-                context.render_shared_async();
-            }
-            Ok(DaemonEvent::OperationCompleted { .. })
-            | Ok(DaemonEvent::DiscoveryCompleted { .. }) => {
-                let _ = refresh_snapshot(context.clone()).await;
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                context.set_connection(false, "守护进程事件连接已断开".into());
-                break;
             }
         }
     }
