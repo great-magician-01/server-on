@@ -1,0 +1,57 @@
+export struct ServiceItem {
+    id: string,
+    name: string,
+    kind: string,
+    distribution: string,
+    subtitle: string,
+    state: string,
+    health: string,
+    matches-search: bool,
+}
+
+export struct DistributionItem {
+    name: string,
+    version: string,
+    state: string,
+    engine-state: string,
+    engine-label: string,
+    container-count: int,
+}
+
+export struct LogLine {
+    time: string,
+    level: string,
+    message: string,
+    matches-filter: bool,
+}
+
+export struct ServiceConfig {
+    id: string,
+    name: string,
+    runtime-kind: string,
+    type-label: string,
+    origin-label: string,
+    state: string,
+    health: string,
+    detail: string,
+    status-message: string,
+    distribution: string,
+    working-directory: string,
+    shell: string,
+    script: string,
+    environment: string,
+    health-check-kind: string,
+    health-target: string,
+    stop-timeout: int,
+    auto-start: bool,
+    restart-policy: string,
+    ports: string,
+    pid: string,
+    uptime: string,
+    cpu: string,
+    memory: string,
+}
+
+export struct MetricPoint {
+    value: float,
+}

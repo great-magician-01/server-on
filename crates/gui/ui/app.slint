@@ -1,0 +1,486 @@
+import { Button, LineEdit, ScrollView, SpinBox, Switch, TextEdit, Palette } from "std-widgets.slint";
+import { Theme, Ui } from "theme.slint";
+import { ServiceItem, DistributionItem, LogLine, ServiceConfig, MetricPoint } from "models.slint";
+import { StatusDot, Pill, IconButton, KpiCard, MetricTile, ServiceRow, LogRow, Toast } from "components.slint";
+
+export { ServiceItem, DistributionItem, LogLine, ServiceConfig, MetricPoint } from "models.slint";
+export { AppTray } from "tray.slint";
+
+export component AppWindow inherits Window {
+    title: "ServerOn · 本地服务管理器";
+    icon: @image-url("../../../assets/icon/server-on-256.png");
+    preferred-width: 1380px;
+    preferred-height: 860px;
+    min-width: 1100px;
+    min-height: 720px;
+    background: Theme.bg;
+    default-font-family: Theme.ui-font;
+    default-font-size: 12px;
+
+    in-out property <[ServiceItem]> services: [];
+    in-out property <[DistributionItem]> distributions: [];
+    in-out property <[LogLine]> logs: [];
+    in-out property <ServiceConfig> selected-service: {
+        id: "", name: "未选择服务", runtime-kind: "", type-label: "", origin-label: "",
+        state: "unknown", health: "not-configured", detail: "", status-message: "",
+        distribution: "", working-directory: "", shell: "PowerShell", script: "", environment: "",
+        health-check-kind: "none", health-target: "", stop-timeout: 10, auto-start: false,
+        restart-policy: "不自动重启", ports: "", pid: "—", uptime: "—", cpu: "—", memory: "—",
+    };
+    in-out property <string> selected-service-id: "";
+    in-out property <string> active-filter: "all";
+    in-out property <string> search-text: "";
+    in-out property <int> visible-service-count: 0;
+    in-out property <int> running-count: 0;
+    in-out property <int> issue-count: 0;
+    in-out property <int> stopped-count: 0;
+    in-out property <int> windows-count: 0;
+    in-out property <int> container-count: 0;
+    in-out property <bool> discovery-running: false;
+    in-out property <string> discovery-summary: "等待自动发现";
+    in-out property <string> last-discovery: "尚未扫描";
+    in-out property <bool> daemon-connected: false;
+    in-out property <string> daemon-status: "正在连接守护进程…";
+    in-out property <string> app-version: "0.1.0";
+    in-out property <bool> config-dirty: false;
+    in-out property <bool> config-saving: false;
+
+    in-out property <bool> dark-theme: true;
+    in-out property <bool> close-to-tray: true;
+    in-out property <string> active-tab: "overview";
+    in-out property <string> selected-cpu: "—";
+    in-out property <string> selected-memory: "—";
+    in-out property <string> selected-uptime: "—";
+    in-out property <int> selected-process-count: 0;
+    in-out property <[MetricPoint]> cpu-history: [];
+    in-out property <[MetricPoint]> memory-history: [];
+    in-out property <string> metrics-message: "";
+    in-out property <string> metrics-sampled-at: "";
+    in-out property <bool> log-follow: true;
+    in-out property <string> log-filter: "";
+    in-out property <string> log-stream-filter: "all";
+    in-out property <length> log-content-y: 0px;
+    in-out property <string> toast-text: "";
+    in-out property <string> toast-kind: "info";
+    in-out property <bool> toast-visible: false;
+
+    callback select-service(id: string);
+    callback start-service(id: string);
+    callback stop-service(id: string);
+    callback restart-service(id: string);
+    callback refresh-discovery();
+    callback save-service(config: ServiceConfig);
+    callback create-service(kind: string);
+    callback search-changed(query: string);
+    callback filter-changed(filter: string);
+    callback clear-logs();
+    callback toggle-theme(dark: bool);
+    callback tab-changed(tab: string);
+    callback log-follow-toggled(follow: bool);
+    callback log-filter-changed(text: string);
+    callback log-stream-changed(stream: string);
+    callback dismiss-toast();
+
+    function service-visible(state: string, matches-search: bool) -> bool {
+        if !matches-search { return false; }
+        if root.active-filter == "running" { return state == "running" || state == "degraded" || state == "starting" || state == "stopping"; }
+        if root.active-filter == "issues" { return state == "failed" || state == "degraded" || state == "unknown" || state == "missing"; }
+        if root.active-filter == "stopped" { return state == "stopped"; }
+        return true;
+    }
+    function select-filter(filter: string) {
+        root.active-filter = filter;
+        root.filter-changed(filter);
+    }
+    function select-service-row(id: string) {
+        root.selected-service-id = id;
+        root.select-service(id);
+    }
+    function set-tab(tab: string) {
+        root.active-tab = tab;
+        root.tab-changed(tab);
+    }
+    function set-log-stream(stream: string) {
+        root.log-stream-filter = stream;
+        root.log-stream-changed(stream);
+    }
+    function log-visible(line: LogLine) -> bool {
+        if root.log-stream-filter != "all" && line.level != root.log-stream-filter { return false; }
+        return root.log-filter == "" || line.matches-filter;
+    }
+
+    init => {
+        Theme.dark = root.dark-theme;
+        Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark-theme => {
+        Theme.dark = root.dark-theme;
+        Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    Rectangle {
+        VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 64px;
+            background: Theme.surface;
+            border-width: 0px;
+            HorizontalLayout {
+                padding-left: 20px; padding-right: 20px; spacing: 14px; alignment: center;
+                Image { width: 34px; height: 34px; source: @image-url("../../../assets/icon/server-on-256.png"); image-fit: contain; }
+                VerticalLayout {
+                    width: 148px; spacing: 1px; alignment: center;
+                    Text { text: "ServerOn"; color: Theme.text; font-size: 18px; font-weight: 600; }
+                    Text { text: "本地服务控制台"; color: Theme.text-muted; font-size: 11px; }
+                }
+                Rectangle { width: 1px; height: 28px; background: Theme.border; }
+                LineEdit {
+                    horizontal-stretch: 1; height: 34px; text <=> root.search-text;
+                    placeholder-text: "搜索服务、容器或发行版";
+                    edited(query) => { root.search-changed(query); }
+                }
+                Pill { label: root.daemon-status; tone: root.daemon-connected ? Theme.success : Theme.danger; }
+                Button {
+                    width: 76px; height: 34px; text: root.dark-theme ? "浅色" : "深色";
+                    clicked => { root.dark-theme = !root.dark-theme; root.toggle-theme(root.dark-theme); }
+                }
+                Button { width: 76px; height: 34px; text: root.discovery-running ? "扫描中…" : "刷新发现"; enabled: !root.discovery-running; clicked => { root.refresh-discovery(); } }
+                Button { width: 88px; height: 34px; text: "+ Windows"; primary: true; clicked => { root.create-service("windows"); } }
+                Button { width: 70px; height: 34px; text: "+ WSL"; clicked => { root.create-service("wsl"); } }
+            }
+            Rectangle { y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.border; }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1; spacing: 0px;
+            Rectangle {
+                width: 232px; background: Theme.sidebar;
+                VerticalLayout {
+                    padding: 14px; spacing: 5px;
+                    Text { text: "工作台"; color: Theme.text-muted; font-size: 11px; font-weight: 600; }
+                    for item in [
+                        {label: "全部服务", filter: "all", count: root.services.length, glyph: "◫"},
+                        {label: "运行中", filter: "running", count: root.running-count, glyph: "▶"},
+                        {label: "需要关注", filter: "issues", count: root.issue-count, glyph: "!"},
+                        {label: "已停止", filter: "stopped", count: root.stopped-count, glyph: "■"},
+                    ]: Rectangle {
+                        height: 36px; border-radius: Theme.radius-sm; background: root.active-filter == item.filter ? Theme.accent-soft : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; padding-right: 10px; spacing: 9px; alignment: center;
+                            Text { text: item.glyph; width: 18px; color: root.active-filter == item.filter ? Theme.accent : Theme.text-muted; font-size: 12px; horizontal-alignment: center; }
+                            Text { text: item.label; color: root.active-filter == item.filter ? Theme.text : Theme.text-secondary; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; }
+                            Text { text: "" + item.count; color: Theme.text-muted; font-size: 11px; vertical-alignment: center; }
+                        }
+                        ta := TouchArea { clicked => { root.select-filter(item.filter); } }
+                        states [ hover when ta.has-hover && root.active-filter != item.filter: { background: Theme.panel-hover; } ]
+                    }
+                    Rectangle { height: 12px; }
+                    Text { text: "运行环境"; color: Theme.text-muted; font-size: 11px; font-weight: 600; }
+                    ScrollView {
+                        vertical-stretch: 1; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        VerticalLayout {
+                            spacing: 5px;
+                            for distro in root.distributions: Rectangle {
+                                height: 62px; border-radius: Theme.radius-sm; background: Theme.panel;
+                                VerticalLayout {
+                                    padding: 9px; spacing: 4px;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        StatusDot { tone: Ui.state-tone(distro.state); }
+                                        Text { text: distro.name; color: Theme.text-secondary; font-size: 12px; horizontal-stretch: 1; }
+                                        Text { text: distro.version; color: Theme.text-muted; font-size: 10px; }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        StatusDot { tone: Ui.engine-tone(distro.engine-state); }
+                                        Text { text: distro.engine-label; color: Theme.text-muted; font-size: 10px; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: "" + distro.container-count; color: Theme.text-muted; font-size: 10px; }
+                                    }
+                                }
+                            }
+                            if root.distributions.length == 0: Text { text: "尚未发现 WSL 环境"; color: Theme.text-muted; font-size: 11px; }
+                        }
+                    }
+                    Rectangle {
+                        height: 82px; border-radius: Theme.radius-md; background: Theme.panel; border-width: 1px; border-color: Theme.border-soft;
+                        VerticalLayout {
+                            padding: 10px; spacing: 4px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                StatusDot { tone: root.discovery-running ? Theme.info : Theme.success; }
+                                Text { text: root.discovery-running ? "正在扫描" : "自动发现已启用"; color: Theme.text-secondary; font-size: 11px; horizontal-stretch: 1; }
+                                IconButton { glyph: "⟳"; tooltip: "刷新自动发现"; active: !root.discovery-running; clicked => { root.refresh-discovery(); } }
+                            }
+                            Text { text: root.discovery-summary; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+                            Text { text: "上次扫描 · " + root.last-discovery; color: Theme.text-muted; font-size: 10px; overflow: elide; }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1; padding: 22px; spacing: 16px;
+                HorizontalLayout {
+                    spacing: 12px; alignment: center;
+                    VerticalLayout {
+                        horizontal-stretch: 1; spacing: 4px;
+                        Text { text: "服务概览"; color: Theme.text; font-size: 24px; font-weight: 600; }
+                        Text { text: "统一管理 Windows、WSL 与 Docker 开发环境"; color: Theme.text-secondary; font-size: 12px; }
+                    }
+                    Text { text: root.container-count + " 个容器"; color: Theme.text-muted; font-size: 12px; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    height: 78px; spacing: 12px;
+                    KpiCard { label: "全部服务"; value: "" + root.services.length; tone: Theme.accent; clicked => { root.select-filter("all"); } }
+                    KpiCard { label: "运行中"; value: "" + root.running-count; tone: Theme.success; clicked => { root.select-filter("running"); } }
+                    KpiCard { label: "需要关注"; value: "" + root.issue-count; tone: Theme.warning; clicked => { root.select-filter("issues"); } }
+                    KpiCard { label: "已停止"; value: "" + root.stopped-count; tone: Theme.text-muted; clicked => { root.select-filter("stopped"); } }
+                }
+
+                HorizontalLayout {
+                    vertical-stretch: 1; spacing: 16px;
+                    Rectangle {
+                        width: 332px; border-radius: Theme.radius-md; background: Theme.panel; border-width: 1px; border-color: Theme.border-soft; clip: true;
+                        VerticalLayout {
+                            Rectangle {
+                                height: 48px;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 14px; alignment: center;
+                                    Text { text: "服务列表"; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-stretch: 1; }
+                                    Text { text: root.visible-service-count + " 项"; color: Theme.text-muted; font-size: 11px; }
+                                }
+                            }
+                            Rectangle { height: 1px; background: Theme.border-soft; }
+                            ScrollView {
+                                vertical-stretch: 1; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                                VerticalLayout {
+                                    padding: 7px; spacing: 4px;
+                                    for svc in root.services: ServiceRow {
+                                        visible: root.service-visible(svc.state, svc.matches-search);
+                                        item: svc; selected: root.selected-service-id == svc.id;
+                                        select => { root.select-service-row(svc.id); }
+                                        start => { root.start-service(svc.id); }
+                                        stop => { root.stop-service(svc.id); }
+                                        restart => { root.restart-service(svc.id); }
+                                    }
+                                    if root.visible-service-count == 0: VerticalLayout {
+                                        height: 160px; alignment: center; spacing: 8px;
+                                        Text { text: "没有匹配的服务"; color: Theme.text-secondary; font-size: 14px; horizontal-alignment: center; }
+                                        Text { text: "调整搜索或筛选条件，或刷新自动发现。"; color: Theme.text-muted; font-size: 11px; horizontal-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1; border-radius: Theme.radius-md; background: Theme.panel; border-width: 1px; border-color: Theme.border-soft; clip: true;
+                        VerticalLayout {
+                            Rectangle {
+                                height: 82px;
+                                HorizontalLayout {
+                                    padding-left: 18px; padding-right: 14px; spacing: 12px; alignment: center;
+                                    VerticalLayout {
+                                        min-width: 160px;
+                                        horizontal-stretch: 1; spacing: 4px; alignment: center;
+                                        Text { text: root.selected-service.name; color: Theme.text; font-size: 17px; font-weight: 600; overflow: elide; }
+                                        Text { text: root.selected-service.type-label + " · " + root.selected-service.origin-label; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+                                    }
+                                    Pill { label: Ui.state-label(root.selected-service.state); tone: Ui.state-tone(root.selected-service.state); }
+                                    IconButton { glyph: "▶"; tooltip: "启动服务"; tone: Theme.success; active: root.selected-service.state == "stopped" || root.selected-service.state == "failed"; clicked => { root.start-service(root.selected-service.id); } }
+                                    IconButton { glyph: "■"; tooltip: "停止服务"; tone: Theme.text-secondary; active: root.selected-service.state == "running" || root.selected-service.state == "degraded"; clicked => { root.stop-service(root.selected-service.id); } }
+                                    IconButton { glyph: "↻"; tooltip: "重启服务"; tone: Theme.accent; active: root.selected-service.state == "running" || root.selected-service.state == "degraded" || root.selected-service.state == "failed"; clicked => { root.restart-service(root.selected-service.id); } }
+                                }
+                            }
+                            Rectangle { height: 1px; background: Theme.border-soft; }
+                            HorizontalLayout {
+                                height: 44px; padding-left: 12px; padding-right: 12px; spacing: 4px;
+                                Button { width: 86px; text: "概览"; primary: root.active-tab == "overview"; clicked => { root.set-tab("overview"); } }
+                                Button { width: 86px; text: "配置"; primary: root.active-tab == "config"; clicked => { root.set-tab("config"); } }
+                                Button { width: 86px; text: "日志"; primary: root.active-tab == "logs"; clicked => { root.set-tab("logs"); } }
+                            }
+
+                            if root.active-tab == "overview": ScrollView {
+                                vertical-stretch: 1; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                                VerticalLayout {
+                                    padding: 16px; spacing: 14px;
+                                    HorizontalLayout {
+                                        height: 118px; spacing: 12px;
+                                        MetricTile { label: "CPU 使用率"; value: root.selected-cpu; unit: "%"; history: root.cpu-history; tone: Theme.accent; caption: root.metrics-message; }
+                                        MetricTile { label: "内存占用"; value: root.selected-memory; unit: "MB"; history: root.memory-history; tone: Theme.violet; caption: root.metrics-message; }
+                                        MetricTile { label: "进程 / 线程"; value: root.selected-process-count == 0 ? "—" : "" + root.selected-process-count; unit: "个"; history: []; tone: Theme.teal; caption: "运行时长 · " + root.selected-uptime; }
+                                    }
+                                    Rectangle {
+                                        height: 148px; border-radius: Theme.radius-md; background: Theme.panel-raised; border-width: 1px; border-color: Theme.border-soft;
+                                        VerticalLayout {
+                                            padding: 14px; spacing: 10px;
+                                            Text { text: "运行信息"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                            HorizontalLayout {
+                                                spacing: 18px;
+                                                Text { text: "PID / 容器"; color: Theme.text-muted; font-size: 11px; width: 76px; }
+                                                Text { text: root.selected-service.pid; color: Theme.text-secondary; font-size: 12px; horizontal-stretch: 1; overflow: elide; }
+                                                Text { text: "端口"; color: Theme.text-muted; font-size: 11px; width: 40px; }
+                                                Text { text: root.selected-service.ports == "" ? "—" : root.selected-service.ports; color: Theme.text-secondary; font-size: 12px; horizontal-stretch: 1; overflow: elide; }
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 18px;
+                                                Text { text: "发行版"; color: Theme.text-muted; font-size: 11px; width: 76px; }
+                                                Text { text: root.selected-service.distribution == "" ? "Windows" : root.selected-service.distribution; color: Theme.text-secondary; font-size: 12px; horizontal-stretch: 1; }
+                                                Text { text: "健康"; color: Theme.text-muted; font-size: 11px; width: 40px; }
+                                                Text { text: Ui.health-label(root.selected-service.health); color: Ui.health-tone(root.selected-service.health); font-size: 12px; horizontal-stretch: 1; }
+                                            }
+                                            Text { text: root.selected-service.status-message == "" ? root.metrics-message : root.selected-service.status-message; color: Theme.text-muted; font-size: 11px; wrap: word-wrap; }
+                                        }
+                                    }
+                                    Rectangle {
+                                        vertical-stretch: 1; min-height: 180px; border-radius: Theme.radius-md; background: Theme.log-bg; border-width: 1px; border-color: Theme.border-soft;
+                                        VerticalLayout {
+                                            padding: 12px; spacing: 8px;
+                                            HorizontalLayout {
+                                                Text { text: "最近日志"; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-stretch: 1; }
+                                                Button { text: "查看全部"; width: 76px; height: 28px; clicked => { root.set-tab("logs"); } }
+                                            }
+                                            for line in root.logs: LogRow { visible: root.log-visible(line); line: line; }
+                                            if root.logs.length == 0: Text { text: "暂无日志 · 启动服务后输出会显示在这里"; color: Theme.text-muted; font-size: 11px; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.active-tab == "config": VerticalLayout {
+                                vertical-stretch: 1;
+                                ScrollView {
+                                    vertical-stretch: 1; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                                    VerticalLayout {
+                                        padding: 16px; spacing: 12px;
+                                        if root.selected-service.runtime-kind == "container": Rectangle {
+                                            height: 190px; border-radius: Theme.radius-md; background: Theme.accent-soft;
+                                            VerticalLayout {
+                                                padding: 16px; spacing: 10px;
+                                                Text { text: "Docker 容器由 Engine 自动管理"; color: Theme.text; font-size: 15px; font-weight: 600; }
+                                                Text { text: "启动、停止和重启会直接作用于现有容器。镜像、端口、挂载和环境变量的修改需要在 Docker 工作流中完成，ServerOn 不会擅自重建容器。"; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                                Text { text: "容器：" + root.selected-service.name + "\n发行版：" + root.selected-service.distribution + "\n镜像：" + root.selected-service.detail; color: Theme.text-muted; font-size: 11px; wrap: word-wrap; }
+                                            }
+                                        }
+                                        if root.selected-service.runtime-kind != "container": VerticalLayout {
+                                            spacing: 12px;
+                                            Text { text: "基本信息"; color: Theme.text; font-size: 14px; font-weight: 600; }
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                VerticalLayout {
+                                                    horizontal-stretch: 1; spacing: 5px;
+                                                    Text { text: "服务名称"; color: Theme.text-secondary; font-size: 11px; }
+                                                    LineEdit { height: 34px; text <=> root.selected-service.name; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                                VerticalLayout {
+                                                    width: 180px; spacing: 5px;
+                                                    Text { text: "运行 Shell"; color: Theme.text-secondary; font-size: 11px; }
+                                                    LineEdit { height: 34px; text <=> root.selected-service.shell; enabled: root.selected-service.runtime-kind == "windows"; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                VerticalLayout {
+                                                    horizontal-stretch: 1; spacing: 5px;
+                                                    Text { text: "工作目录"; color: Theme.text-secondary; font-size: 11px; }
+                                                    LineEdit { height: 34px; text <=> root.selected-service.working-directory; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                                VerticalLayout {
+                                                    width: 180px; spacing: 5px;
+                                                    Text { text: "WSL 发行版"; color: Theme.text-secondary; font-size: 11px; }
+                                                    LineEdit { height: 34px; text <=> root.selected-service.distribution; enabled: root.selected-service.runtime-kind == "wsl"; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                            }
+                                            Text { text: "启动脚本"; color: Theme.text; font-size: 14px; font-weight: 600; }
+                                            TextEdit { height: 170px; text <=> root.selected-service.script; font-family: Theme.mono-font; font-size: 12px; wrap: no-wrap; edited(_) => { root.config-dirty = true; } }
+                                            Text { text: "健康与重启"; color: Theme.text; font-size: 14px; font-weight: 600; }
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                VerticalLayout {
+                                                    width: 170px; spacing: 5px;
+                                                    Text { text: "健康检查"; color: Theme.text-secondary; font-size: 11px; }
+                                                    LineEdit { height: 34px; text <=> root.selected-service.health-check-kind; placeholder-text: "none / http / tcp"; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                                VerticalLayout {
+                                                    horizontal-stretch: 1; spacing: 5px;
+                                                    Text { text: "检查目标"; color: Theme.text-secondary; font-size: 11px; }
+                                                    LineEdit { height: 34px; text <=> root.selected-service.health-target; placeholder-text: "http://127.0.0.1:8080/health 或 host:port"; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 16px;
+                                                VerticalLayout {
+                                                    width: 150px; spacing: 5px;
+                                                    Text { text: "停止超时（秒）"; color: Theme.text-secondary; font-size: 11px; }
+                                                    SpinBox { height: 34px; minimum: 1; maximum: 600; value <=> root.selected-service.stop-timeout; edited(_) => { root.config-dirty = true; } }
+                                                }
+                                                VerticalLayout {
+                                                    horizontal-stretch: 1; spacing: 5px;
+                                                    Text { text: "随 daemon 自动启动"; color: Theme.text-secondary; font-size: 11px; }
+                                                    Switch { checked <=> root.selected-service.auto-start; toggled => { root.config-dirty = true; } }
+                                                }
+                                            }
+                                            Text { text: "环境变量（每行 KEY=VALUE）"; color: Theme.text; font-size: 14px; font-weight: 600; }
+                                            TextEdit { height: 90px; text <=> root.selected-service.environment; font-family: Theme.mono-font; font-size: 12px; wrap: no-wrap; edited(_) => { root.config-dirty = true; } }
+                                            Text { text: "长期服务请保持前台运行，不要使用 nohup、disown 或 & 脱离管理。保存后由 daemon 校验并应用配置。"; color: Theme.text-muted; font-size: 11px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 50px; background: Theme.panel-raised; border-width: 0px;
+                                    HorizontalLayout {
+                                        padding-left: 16px; padding-right: 16px; spacing: 12px; alignment: center;
+                                        Text { text: root.config-dirty ? "有未保存的更改" : "配置已同步"; color: root.config-dirty ? Theme.warning : Theme.text-muted; font-size: 11px; horizontal-stretch: 1; }
+                                        Button { width: 110px; height: 32px; text: root.config-saving ? "保存中…" : "保存更改"; primary: true; enabled: root.selected-service.id != "" || root.config-dirty; clicked => { root.config-saving = true; root.save-service(root.selected-service); } }
+                                    }
+                                }
+                            }
+
+                            if root.active-tab == "logs": VerticalLayout {
+                                vertical-stretch: 1;
+                                HorizontalLayout {
+                                    height: 52px; padding-left: 12px; padding-right: 12px; spacing: 7px; alignment: center;
+                                    LineEdit { horizontal-stretch: 1; height: 32px; text <=> root.log-filter; placeholder-text: "筛选日志内容"; edited(text) => { root.log-filter-changed(text); } }
+                                    Button { width: 54px; text: "全部"; primary: root.log-stream-filter == "all"; clicked => { root.set-log-stream("all"); } }
+                                    Button { width: 54px; text: "输出"; primary: root.log-stream-filter == "stdout"; clicked => { root.set-log-stream("stdout"); } }
+                                    Button { width: 54px; text: "错误"; primary: root.log-stream-filter == "stderr"; clicked => { root.set-log-stream("stderr"); } }
+                                    Button { width: 54px; text: "系统"; primary: root.log-stream-filter == "system"; clicked => { root.set-log-stream("system"); } }
+                                    Button { width: 70px; text: root.log-follow ? "暂停" : "跟随"; clicked => { root.log-follow = !root.log-follow; root.log-follow-toggled(root.log-follow); } }
+                                    IconButton { glyph: "⌫"; tooltip: "清空当前视图"; clicked => { root.clear-logs(); } }
+                                }
+                                Rectangle { height: 1px; background: Theme.border-soft; }
+                                ScrollView {
+                                    vertical-stretch: 1; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                                    content-y: root.log-follow ? -100000px : root.log-content-y;
+                                    changed content-y => { root.log-content-y = self.content-y; }
+                                    VerticalLayout {
+                                        padding: 12px; spacing: 7px;
+                                        for line in root.logs: LogRow { visible: root.log-visible(line); line: line; }
+                                        if root.logs.length == 0: Text { text: "暂无日志"; color: Theme.text-muted; font-size: 12px; }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 28px; background: Theme.panel-raised;
+                                    HorizontalLayout {
+                                        padding-left: 12px; padding-right: 12px; alignment: center;
+                                        Text { text: root.log-follow ? "跟随最新输出" : "已暂停自动滚动"; color: Theme.text-muted; font-size: 11px; horizontal-stretch: 1; }
+                                        Text { text: "磁盘日志保留"; color: Theme.text-muted; font-size: 11px; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
+        if root.toast-visible: Toast {
+            x: parent.width - self.width - 24px;
+            y: parent.height - self.height - 24px;
+            width: 440px;
+            message: root.toast-text;
+            tone: root.toast-kind == "error" ? Theme.danger : root.toast-kind == "success" ? Theme.success : Theme.accent;
+            TouchArea { clicked => { root.toast-visible = false; root.dismiss-toast(); } }
+        }
+    }
+}

@@ -17,5 +17,8 @@ server-on-daemon.workspace = true
 slint = { version = "=1.18.1", features = ["system-tray"] }
 tokio.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [build-dependencies]
 slint-build = "=1.18.1"

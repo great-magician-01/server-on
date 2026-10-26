@@ -33,6 +33,9 @@ enum Commands {
         #[arg(long, default_value_t = 100)]
         lines: usize,
     },
+    Metrics {
+        service: String,
+    },
     AddWindows {
         name: String,
         working_directory: String,
@@ -106,6 +109,13 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Metrics { service } => {
+            let id = resolve_service(&client, &service).await?;
+            let response = client
+                .request(Command::GetMetrics { service_id: id })
+                .await?;
+            print_response(response)?;
+        }
         Commands::AddWindows {
             name,
             working_directory,
@@ -160,6 +170,12 @@ fn print_response(response: ResponseData) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&snapshot)?)
         }
         ResponseData::Logs(logs) => println!("{}", serde_json::to_string_pretty(&logs)?),
+        ResponseData::Settings(settings) => {
+            println!("{}", serde_json::to_string_pretty(&settings)?)
+        }
+        ResponseData::Metrics(metrics) => {
+            println!("{}", serde_json::to_string_pretty(&metrics)?)
+        }
         ResponseData::Pong => println!("pong"),
         ResponseData::Empty => {}
     }

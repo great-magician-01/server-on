@@ -13,10 +13,10 @@
 重新生成（需要已有离线 Rust 依赖缓存）：
 
 ```bash
-cargo run --offline --manifest-path tools/icon-gen/Cargo.toml -- \
+ICON_SMALL_SVG=assets/icon/server-on-small.svg cargo run --offline --manifest-path tools/icon-gen/Cargo.toml -- \
   assets/icon/server-on.svg assets/icon/server-on.ico assets/icon server-on
 cargo run --offline --manifest-path tools/icon-gen/Cargo.toml -- \
   assets/icon/tray.svg assets/icon/tray.ico assets/icon tray
 ```
 
-小尺寸 ICO 帧默认使用 `server-on-small.svg` 时，可将其作为生成源替换第一个命令的 SVG 路径；正常发布保留两种光学版本供后续调整。
+小尺寸 ICO 帧通过 `ICON_SMALL_SVG` 使用 `server-on-small.svg`，大尺寸保留完整渐变和描边；正常发布不需要重新运行生成工具。

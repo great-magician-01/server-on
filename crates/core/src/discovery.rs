@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +50,8 @@ pub struct ContainerInfo {
     pub state: String,
     #[serde(default)]
     pub health: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub ports: Vec<String>,
     #[serde(default)]

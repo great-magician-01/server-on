@@ -442,10 +442,20 @@ const fn default_log_lines() -> usize {
     2_000
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_enabled")]
     pub close_to_tray: bool,
+    #[serde(default)]
+    pub theme: ThemePreference,
     #[serde(default)]
     pub start_daemon_on_login: bool,
     #[serde(default = "default_discovery_settings")]
@@ -474,6 +484,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             close_to_tray: true,
+            theme: ThemePreference::Dark,
             start_daemon_on_login: false,
             discovery: default_discovery_settings(),
             logs: default_log_settings(),

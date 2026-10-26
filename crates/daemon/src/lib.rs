@@ -4,6 +4,7 @@ pub mod docker;
 pub mod health;
 pub mod ipc;
 pub mod manager;
+pub mod metrics;
 pub mod process;
 pub mod storage;
 #[cfg(windows)]

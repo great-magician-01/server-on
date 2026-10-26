@@ -1,5 +1,6 @@
 use crate::discovery::DiscoveryManager;
 use crate::docker;
+use crate::metrics::{MetricsCache, RawMetrics, logical_processor_count, query_timeout};
 use crate::process::{ProcessController, ProcessMonitor, SpawnedProcess};
 use crate::storage::{ConfigStore, LogStore, StateStore};
 use anyhow::{Result, anyhow, bail};
@@ -10,6 +11,7 @@ use server_on_core::config::{
 };
 use server_on_core::discovery::DiscoverySnapshot;
 use server_on_core::event::{DaemonEvent, LogEvent, LogStream};
+use server_on_core::metrics::ServiceMetrics;
 use server_on_core::paths::{AppPaths, PersistedState, ServiceInstanceState};
 use server_on_core::state::{
     DaemonSnapshot, HealthState, OperationKind, ServiceState, ServiceStatus, ServiceView,
@@ -28,6 +30,7 @@ pub struct ManagerInner {
     discovery: RwLock<DiscoverySnapshot>,
     discovered_at: RwLock<Option<chrono::DateTime<Utc>>>,
     controllers: Mutex<BTreeMap<ServiceId, ProcessController>>,
+    metrics_cache: Mutex<MetricsCache>,
     restart_attempts: Mutex<BTreeMap<ServiceId, u32>>,
     started_at: Mutex<BTreeMap<ServiceId, tokio::time::Instant>>,
     operations: Mutex<BTreeSet<ServiceId>>,
@@ -89,6 +92,7 @@ impl ServiceManager {
                 discovery: RwLock::new(DiscoverySnapshot::default()),
                 discovered_at: RwLock::new(None),
                 controllers: Mutex::new(BTreeMap::new()),
+                metrics_cache: Mutex::new(MetricsCache::default()),
                 restart_attempts: Mutex::new(BTreeMap::new()),
                 started_at: Mutex::new(BTreeMap::new()),
                 operations: Mutex::new(BTreeSet::new()),
@@ -166,6 +170,7 @@ impl ServiceManager {
     }
 
     pub fn remove_service(&self, service_id: &ServiceId) -> Result<()> {
+        self.inner.metrics_cache.lock().unwrap().remove(service_id);
         if self
             .inner
             .controllers
@@ -488,6 +493,167 @@ impl ServiceManager {
         self.start(service_id).await
     }
 
+    pub async fn metrics(&self, service_id: &ServiceId) -> Result<ServiceMetrics> {
+        let definition = self.definition(service_id)?;
+        let status = self
+            .inner
+            .statuses
+            .read()
+            .unwrap()
+            .get(service_id)
+            .cloned()
+            .unwrap_or_else(|| ServiceStatus::new(service_id.clone()));
+        let started_at = self
+            .inner
+            .persisted
+            .lock()
+            .unwrap()
+            .instances
+            .iter()
+            .find(|instance| &instance.service_id == service_id)
+            .and_then(|instance| instance.process_started_at);
+        let uptime_seconds =
+            started_at.map(|started| (Utc::now() - started).num_seconds().max(0) as u64);
+        let mut result = ServiceMetrics {
+            service_id: service_id.clone(),
+            sampled_at: Utc::now(),
+            cpu_percent: None,
+            memory_bytes: None,
+            process_count: None,
+            uptime_seconds,
+            message: None,
+        };
+        if !matches!(
+            status.state,
+            ServiceState::Running | ServiceState::Degraded | ServiceState::Starting
+        ) {
+            result.message = Some("服务未运行，暂无资源指标".into());
+            return Ok(result);
+        }
+
+        let mut cache_identity = None;
+        let raw_result: Result<Result<RawMetrics, anyhow::Error>, tokio::time::error::Elapsed> =
+            tokio::time::timeout(query_timeout(), async {
+                match &definition.runtime {
+                    RuntimeConfig::WindowsScript { .. } => {
+                        let controller = self
+                            .inner
+                            .controllers
+                            .lock()
+                            .unwrap()
+                            .get(service_id)
+                            .cloned();
+                        let Some(ProcessController::Windows(controller)) = controller else {
+                            return Ok(RawMetrics {
+                                message: Some("进程未受管或已退出".into()),
+                                ..Default::default()
+                            });
+                        };
+                        let identity = controller.identity();
+                        let metrics =
+                            tokio::task::spawn_blocking(move || controller.metrics()).await??;
+                        cache_identity = Some((identity, metrics.cpu_time_ns));
+                        Ok(RawMetrics {
+                            cpu_time_ns: Some(metrics.cpu_time_ns),
+                            memory_bytes: Some(metrics.memory_bytes),
+                            process_count: Some(metrics.process_count),
+                            message: metrics.partial.then(|| "部分进程内存无法读取".into()),
+                            ..Default::default()
+                        })
+                    }
+                    RuntimeConfig::WslScript { .. } => {
+                        let controller = self
+                            .inner
+                            .controllers
+                            .lock()
+                            .unwrap()
+                            .get(service_id)
+                            .cloned();
+                        match controller {
+                            Some(ProcessController::Systemd {
+                                distribution,
+                                unit_name,
+                            }) => {
+                                let raw =
+                                    crate::process::systemd_metrics(&distribution, &unit_name)
+                                        .await?;
+                                if let Some(cpu_time_ns) = raw.cpu_time_ns {
+                                    cache_identity =
+                                        Some((format!("systemd:{unit_name}"), cpu_time_ns));
+                                }
+                                Ok(raw)
+                            }
+                            Some(ProcessController::Wsl {
+                                distribution,
+                                process_group_id,
+                            }) => {
+                                let raw = crate::process::process_group_metrics(
+                                    &distribution,
+                                    process_group_id,
+                                )
+                                .await?;
+                                if let Some(cpu_time_ns) = raw.cpu_time_ns {
+                                    cache_identity =
+                                        Some((format!("pgid:{process_group_id}"), cpu_time_ns));
+                                }
+                                Ok(raw)
+                            }
+                            _ => Ok(RawMetrics {
+                                message: Some("进程未受管或已退出".into()),
+                                ..Default::default()
+                            }),
+                        }
+                    }
+                    RuntimeConfig::DockerContainer {
+                        distribution,
+                        container_id,
+                        ..
+                    } => {
+                        let stats = crate::docker::stats(distribution, container_id).await?;
+                        if let Some(started) = stats.started_at {
+                            result.uptime_seconds =
+                                Some((Utc::now() - started).num_seconds().max(0) as u64);
+                        }
+                        Ok(RawMetrics {
+                            cpu_percent: stats.cpu_percent,
+                            memory_bytes: stats.memory_bytes,
+                            process_count: stats.process_count,
+                            ..Default::default()
+                        })
+                    }
+                }
+            })
+            .await;
+        let raw = match raw_result {
+            Ok(Ok(raw)) => raw,
+            Ok(Err(error)) => {
+                result.message = Some(error.to_string());
+                return Ok(result);
+            }
+            Err(_) => {
+                result.message = Some("指标查询超时".into());
+                return Ok(result);
+            }
+        };
+        if let Some((identity, cumulative_ns)) = cache_identity {
+            result.cpu_percent = self.inner.metrics_cache.lock().unwrap().cpu_percent(
+                service_id,
+                identity,
+                cumulative_ns,
+                logical_processor_count(),
+            );
+        } else if let Some(percent) = raw.cpu_percent {
+            result.cpu_percent =
+                Some((percent / logical_processor_count() as f64).clamp(0.0, 100.0));
+        }
+        result.memory_bytes = raw.memory_bytes;
+        result.process_count = raw.process_count;
+        if let Some(message) = raw.message {
+            result.message = Some(message);
+        }
+        Ok(result)
+    }
+
     pub async fn recent_logs(&self, service_id: &ServiceId, limit: usize) -> Result<Vec<LogEvent>> {
         let definition = self.definition(service_id)?;
         if let RuntimeConfig::DockerContainer {
@@ -707,6 +873,7 @@ impl ServiceManager {
     }
 
     fn process_exited(&self, service_id: &ServiceId, result: Result<crate::process::ProcessExit>) {
+        self.inner.metrics_cache.lock().unwrap().remove(service_id);
         self.inner.controllers.lock().unwrap().remove(service_id);
         let elapsed = self
             .inner
@@ -1029,6 +1196,19 @@ impl ServiceManager {
                 );
             }
         }
+    }
+
+    pub fn settings(&self) -> server_on_core::config::AppSettings {
+        self.inner.config.read().unwrap().settings.clone()
+    }
+
+    pub fn update_settings(&self, settings: server_on_core::config::AppSettings) -> Result<()> {
+        let mut config = self.inner.config.read().unwrap().clone();
+        config.settings = settings;
+        config.validate()?;
+        self.inner.store.save(&config)?;
+        *self.inner.config.write().unwrap() = config;
+        Ok(())
     }
 
     pub fn health_candidates(&self) -> Vec<(ServiceDefinition, ServiceStatus)> {

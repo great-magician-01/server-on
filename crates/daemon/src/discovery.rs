@@ -188,6 +188,11 @@ fn container_from_inspect(value: &Value) -> ContainerInfo {
             .pointer("/State/Health/Status")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        started_at: value
+            .pointer("/State/StartedAt")
+            .and_then(Value::as_str)
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&chrono::Utc)),
         ports,
         compose_project: labels
             .get("com.docker.compose.project")

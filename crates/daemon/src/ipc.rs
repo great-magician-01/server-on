@@ -114,10 +114,18 @@ async fn dispatch(manager: ServiceManager, request: ClientRequest) -> ServerMess
             .refresh_discovery()
             .await
             .map(|_| ResponseData::Empty),
+        Command::GetSettings => Ok(ResponseData::Settings(Box::new(manager.settings()))),
+        Command::UpdateSettings(settings) => manager
+            .update_settings(*settings)
+            .map(|_| ResponseData::Empty),
         Command::GetLogs { service_id, limit } => manager
             .recent_logs(&service_id, limit)
             .await
             .map(ResponseData::Logs),
+        Command::GetMetrics { service_id } => manager
+            .metrics(&service_id)
+            .await
+            .map(|metrics| ResponseData::Metrics(Box::new(metrics))),
     };
     match result {
         Ok(data) => ServerMessage::success(request_id, data),

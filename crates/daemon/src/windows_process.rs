@@ -19,15 +19,17 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JobObjectBasicAccountingInformation, OpenJobObjectW, QueryInformationJobObject,
-    TerminateJobObject,
+    JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JobObjectBasicAccountingInformation, JobObjectBasicAndIoAccountingInformation,
+    JobObjectBasicProcessIdList, OpenJobObjectW, QueryInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Threading::{
     CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     CreateProcessW, GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, ResumeThread,
-    STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
+    ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
@@ -42,6 +44,13 @@ pub struct WindowsProcess {
 pub struct WindowsProcessController {
     pid: u32,
     job: Arc<OwnedHandle>,
+}
+
+pub struct WindowsProcessMetrics {
+    pub cpu_time_ns: u64,
+    pub memory_bytes: u64,
+    pub process_count: u32,
+    pub partial: bool,
 }
 
 pub struct SpawnedWindowsProcess {
@@ -230,6 +239,95 @@ impl WindowsProcess {
 }
 
 impl WindowsProcessController {
+    pub fn identity(&self) -> String {
+        format!("windows-job:{:x}", self.job.0.0 as usize)
+    }
+
+    pub fn metrics(&self) -> Result<WindowsProcessMetrics> {
+        let mut accounting = JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION::default();
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.job.0),
+                JobObjectBasicAndIoAccountingInformation,
+                (&mut accounting as *mut JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION).cast(),
+                size_of::<JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION>() as u32,
+                None,
+            )?;
+        }
+        let cpu_time_ns = (accounting.BasicInfo.TotalUserTime.max(0)
+            + accounting.BasicInfo.TotalKernelTime.max(0)) as u64
+            * 100;
+        let process_ids = self.process_ids()?;
+        let mut memory_bytes = 0_u64;
+        let mut partial = false;
+        for pid in &process_ids {
+            let process = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                    false,
+                    *pid,
+                )
+            };
+            let Ok(process) = process else {
+                partial = true;
+                continue;
+            };
+            let process = OwnedHandle::new(process);
+            let mut counters = PROCESS_MEMORY_COUNTERS {
+                cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                ..Default::default()
+            };
+            if unsafe { GetProcessMemoryInfo(process.0, &mut counters, counters.cb) }.is_ok() {
+                memory_bytes = memory_bytes.saturating_add(counters.WorkingSetSize as u64);
+            } else {
+                partial = true;
+            }
+        }
+        Ok(WindowsProcessMetrics {
+            cpu_time_ns,
+            memory_bytes,
+            process_count: process_ids.len() as u32,
+            partial,
+        })
+    }
+
+    fn process_ids(&self) -> Result<Vec<u32>> {
+        let mut capacity = 16_usize;
+        for _ in 0..5 {
+            let bytes =
+                size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + (capacity - 1) * size_of::<usize>();
+            let mut buffer = vec![0_u8; bytes];
+            let mut return_length = 0_u32;
+            let result = unsafe {
+                QueryInformationJobObject(
+                    Some(self.job.0),
+                    JobObjectBasicProcessIdList,
+                    buffer.as_mut_ptr().cast(),
+                    bytes as u32,
+                    Some(&mut return_length),
+                )
+            };
+            let info = unsafe { &*(buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()) };
+            match result {
+                Ok(()) => {
+                    let count = info.NumberOfProcessIdsInList as usize;
+                    let ids =
+                        unsafe { std::slice::from_raw_parts(info.ProcessIdList.as_ptr(), count) };
+                    return Ok(ids.iter().map(|pid| *pid as u32).collect());
+                }
+                Err(error) => {
+                    let required = info.NumberOfAssignedProcesses as usize;
+                    if required > capacity {
+                        capacity = required + 8;
+                        continue;
+                    }
+                    return Err(error).context("读取 Windows Job 进程列表失败");
+                }
+            }
+        }
+        bail!("Windows Job 进程数量超过可读取范围")
+    }
+
     pub async fn stop(&self, timeout: Duration) -> Result<()> {
         if self.active_processes()? == 0 {
             return Ok(());

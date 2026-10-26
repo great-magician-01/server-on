@@ -4130,6 +4130,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tokio",
+ "windows",
 ]
 
 [[package]]

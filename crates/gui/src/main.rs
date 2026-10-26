@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 use server_on_core::config::{
     HealthCheckConfig, RestartPolicy, RuntimeConfig, ServiceDefinition, ServiceId, ServiceOrigin,
-    WindowsShell,
+    ThemePreference, WindowsShell,
 };
 use server_on_core::discovery::{ContainerInfo, DiscoverySnapshot, DockerEngineState};
 use server_on_core::event::{DaemonEvent, LogEvent, LogStream};
@@ -15,12 +15,20 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 
+mod metrics;
+mod single_instance;
+
+use single_instance::SingleInstance;
+
 slint::include_modules!();
 
 struct SharedState {
     snapshot: DaemonSnapshot,
     selected_id: String,
     logs: Vec<LogEvent>,
+    metrics: Option<server_on_core::metrics::ServiceMetrics>,
+    cpu_history: Vec<f32>,
+    memory_history: Vec<f64>,
     draft: bool,
 }
 
@@ -35,6 +43,9 @@ impl SharedState {
             },
             selected_id: String::new(),
             logs: Vec::new(),
+            metrics: None,
+            cpu_history: Vec::new(),
+            memory_history: Vec::new(),
             draft: false,
         }
     }
@@ -44,6 +55,7 @@ impl SharedState {
 struct AppContext {
     runtime: Handle,
     window: Weak<AppWindow>,
+    tray: Weak<AppTray>,
     client: Arc<Mutex<Option<DaemonClient>>>,
     shared: Arc<Mutex<SharedState>>,
 }
@@ -78,10 +90,12 @@ impl AppContext {
         };
         let selected = render_services(&window, &snapshot, &selected, draft);
         self.shared.lock().unwrap().selected_id = selected;
+        update_tray(&self.tray, &snapshot);
     }
 
     fn render_async(&self, snapshot: DaemonSnapshot) {
         let window = self.window.clone();
+        let tray = self.tray.clone();
         let shared = self.shared.clone();
         let _ = invoke_from_event_loop(move || {
             if let Some(window) = window.upgrade() {
@@ -91,6 +105,7 @@ impl AppContext {
                 };
                 let selected = render_services(&window, &snapshot, &preferred, draft);
                 shared.lock().unwrap().selected_id = selected;
+                update_tray(&tray, &snapshot);
             }
         });
     }
@@ -141,7 +156,8 @@ impl AppContext {
             if let Some(window) = window.upgrade()
                 && window.get_selected_service_id() == selected
             {
-                window.set_logs(log_model(&logs));
+                let filter = window.get_log_filter();
+                window.set_logs(log_model(&logs, &filter));
             }
         });
     }
@@ -155,18 +171,63 @@ impl AppContext {
 }
 
 fn main() -> Result<()> {
+    let Some(instance) = SingleInstance::acquire()? else {
+        return Ok(());
+    };
     let runtime = tokio::runtime::Runtime::new()?;
     let window = AppWindow::new()?;
+    let tray = AppTray::new()?;
+    tray.show()?;
+    instance.watch_activation(window.as_weak());
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
     window.set_daemon_connected(false);
     window.set_daemon_status("正在连接守护进程…".into());
     let context = AppContext {
         runtime: runtime.handle().clone(),
         window: window.as_weak(),
+        tray: tray.as_weak(),
         client: Arc::new(Mutex::new(None)),
         shared: Arc::new(Mutex::new(SharedState::new())),
     };
     context.render_now();
+
+    tray.on_open_window({
+        let window = window.as_weak();
+        move || {
+            if let Some(window) = window.upgrade() {
+                let _ = window.show();
+                window.window().set_minimized(false);
+            }
+        }
+    });
+    tray.on_refresh_requested({
+        let context = context.clone();
+        move || spawn_refresh_discovery(context.clone())
+    });
+    tray.on_quit_requested({
+        let tray = tray.as_weak();
+        move || {
+            if let Some(tray) = tray.upgrade() {
+                let _ = tray.hide();
+            }
+            let _ = slint::quit_event_loop();
+        }
+    });
+    window.window().on_close_requested({
+        let window_handle = window.as_weak();
+        move || {
+            let close_to_tray = window_handle
+                .upgrade()
+                .map(|window| window.get_close_to_tray())
+                .unwrap_or(true);
+            if close_to_tray {
+                slint::CloseRequestResponse::HideWindow
+            } else {
+                let _ = slint::quit_event_loop();
+                slint::CloseRequestResponse::HideWindow
+            }
+        }
+    });
 
     window.on_select_service({
         let context = context.clone();
@@ -183,6 +244,7 @@ fn main() -> Result<()> {
                 shared.logs.clear();
                 shared.draft = false;
             }
+            crate::metrics::reset(context.clone());
             context.render_now();
             let context = context.clone();
             context.clone().spawn(async move {
@@ -215,23 +277,7 @@ fn main() -> Result<()> {
     });
     window.on_refresh_discovery({
         let context = context.clone();
-        move || {
-            let context = context.clone();
-            context.set_discovery_running(true);
-            context.clone().spawn(async move {
-                let result = async {
-                    let client = context.client()?;
-                    client.request(Command::RefreshDiscovery).await?;
-                    refresh_snapshot(context.clone()).await
-                }
-                .await;
-                context.set_discovery_running(false);
-                match result {
-                    Ok(()) => context.set_connection(true, "守护进程已连接".into()),
-                    Err(error) => context.set_connection(true, format!("自动发现失败：{error:#}")),
-                }
-            });
-        }
+        move || spawn_refresh_discovery(context.clone())
     });
     window.on_create_service({
         let context = context.clone();
@@ -292,6 +338,7 @@ fn main() -> Result<()> {
                 shared.logs.clear();
                 shared.draft = true;
             }
+            crate::metrics::reset(context.clone());
             window.set_selected_service_id("".into());
             window.set_selected_service(config);
             window.set_config_dirty(true);
@@ -322,7 +369,44 @@ fn main() -> Result<()> {
         let context = context.clone();
         move |_| context.render_now()
     });
-    window.on_filter_changed(|_| {});
+    window.on_filter_changed({
+        let context = context.clone();
+        move |_| context.render_now()
+    });
+    window.on_log_filter_changed({
+        let context = context.clone();
+        move |_| context.set_logs_async()
+    });
+    window.on_toggle_theme({
+        let context = context.clone();
+        move |dark| {
+            let context = context.clone();
+            context.clone().spawn(async move {
+                let result = async {
+                    let client = context.client()?;
+                    let response = client.request(Command::GetSettings).await?;
+                    let ResponseData::Settings(mut settings) = response else {
+                        bail!("守护进程返回了无效设置");
+                    };
+                    settings.theme = if dark {
+                        ThemePreference::Dark
+                    } else {
+                        ThemePreference::Light
+                    };
+                    client.request(Command::UpdateSettings(settings)).await?;
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+                if let Err(error) = result {
+                    context.set_connection(true, format!("主题保存失败：{error:#}"));
+                }
+            });
+        }
+    });
+    window.on_tab_changed(|_| {});
+    window.on_log_follow_toggled(|_| {});
+    window.on_log_stream_changed(|_| {});
+    window.on_dismiss_toast(|| {});
     window.on_clear_logs({
         let context = context.clone();
         move || context.clear_logs()
@@ -333,11 +417,15 @@ fn main() -> Result<()> {
         match DaemonClient::connect_or_start().await {
             Ok(client) => {
                 *startup.client.lock().unwrap() = Some(client);
+                if let Err(error) = load_preferences(startup.clone()).await {
+                    startup.set_connection(true, format!("读取界面设置失败：{error:#}"));
+                }
                 startup.set_connection(true, "守护进程已连接".into());
                 if let Err(error) = refresh_snapshot(startup.clone()).await {
                     startup.set_connection(true, format!("读取服务状态失败：{error:#}"));
                 }
                 startup.spawn(watch_events(startup.clone()));
+                startup.spawn(crate::metrics::watch(startup.clone()));
             }
             Err(error) => {
                 startup.set_connection(false, format!("守护进程连接失败：{error:#}"));
@@ -347,6 +435,23 @@ fn main() -> Result<()> {
 
     window.run()?;
     Ok(())
+}
+
+fn spawn_refresh_discovery(context: AppContext) {
+    context.set_discovery_running(true);
+    context.clone().spawn(async move {
+        let result = async {
+            let client = context.client()?;
+            client.request(Command::RefreshDiscovery).await?;
+            refresh_snapshot(context.clone()).await
+        }
+        .await;
+        context.set_discovery_running(false);
+        match result {
+            Ok(()) => context.set_connection(true, "守护进程已连接".into()),
+            Err(error) => context.set_connection(true, format!("自动发现失败：{error:#}")),
+        }
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -398,6 +503,24 @@ async fn refresh_snapshot(context: AppContext) -> Result<()> {
     };
     context.shared.lock().unwrap().snapshot = snapshot.clone();
     context.render_async(snapshot);
+    Ok(())
+}
+
+async fn load_preferences(context: AppContext) -> Result<()> {
+    let client = context.client()?;
+    let response = client.request(Command::GetSettings).await?;
+    let ResponseData::Settings(settings) = response else {
+        bail!("守护进程返回了无效设置");
+    };
+    let window = context.window.clone();
+    let dark = settings.theme == ThemePreference::Dark;
+    let close_to_tray = settings.close_to_tray;
+    let _ = invoke_from_event_loop(move || {
+        if let Some(window) = window.upgrade() {
+            window.set_dark_theme(dark);
+            window.set_close_to_tray(close_to_tray);
+        }
+    });
     Ok(())
 }
 
@@ -618,6 +741,11 @@ fn render_services(
         })
         .collect();
     services.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    let active_filter = window.get_active_filter().to_string();
+    let visible_service_count = services
+        .iter()
+        .filter(|item| item.matches_search && filter_matches(&item.state, &active_filter))
+        .count() as i32;
     let running_count = snapshot
         .services
         .iter()
@@ -702,6 +830,8 @@ fn render_services(
     window.set_issue_count(issue_count);
     window.set_stopped_count(stopped_count);
     window.set_windows_count(windows_count);
+    window.set_visible_service_count(visible_service_count);
+    window.set_container_count(container_count as i32);
     window.set_discovery_summary(
         format!(
             "{} 个发行版 · {container_count} 个容器",
@@ -728,7 +858,14 @@ fn render_services(
     } else {
         snapshot
             .services
-            .first()
+            .iter()
+            .find(|service| {
+                matches!(
+                    service.status.state,
+                    ServiceState::Running | ServiceState::Degraded
+                )
+            })
+            .or_else(|| snapshot.services.first())
             .map(|service| service.definition.id.as_str().to_owned())
             .unwrap_or_default()
     };
@@ -940,7 +1077,8 @@ fn environment_string(environment: &BTreeMap<String, String>) -> String {
         .join("\n")
 }
 
-fn log_model(logs: &[LogEvent]) -> ModelRc<LogLine> {
+fn log_model(logs: &[LogEvent], filter: &str) -> ModelRc<LogLine> {
+    let filter = filter.to_lowercase();
     ModelRc::new(VecModel::from(
         logs.iter()
             .map(|log| LogLine {
@@ -957,9 +1095,48 @@ fn log_model(logs: &[LogEvent]) -> ModelRc<LogLine> {
                 }
                 .into(),
                 message: log.message.clone().into(),
+                matches_filter: filter.is_empty() || log.message.to_lowercase().contains(&filter),
             })
             .collect::<Vec<_>>(),
     ))
+}
+
+fn update_tray(tray: &Weak<AppTray>, snapshot: &DaemonSnapshot) {
+    if let Some(tray) = tray.upgrade() {
+        let running = snapshot
+            .services
+            .iter()
+            .filter(|service| {
+                matches!(
+                    service.status.state,
+                    ServiceState::Running | ServiceState::Degraded
+                )
+            })
+            .count();
+        let issues = snapshot
+            .services
+            .iter()
+            .filter(|service| {
+                matches!(
+                    service.status.state,
+                    ServiceState::Failed
+                        | ServiceState::Degraded
+                        | ServiceState::Unknown
+                        | ServiceState::Missing
+                )
+            })
+            .count();
+        tray.set_summary(format!("ServerOn · {running} 运行中 · {issues} 需要关注").into());
+    }
+}
+
+fn filter_matches(state: &str, filter: &str) -> bool {
+    match filter {
+        "running" => matches!(state, "running" | "degraded" | "starting" | "stopping"),
+        "issues" => matches!(state, "failed" | "degraded" | "unknown" | "missing"),
+        "stopped" => state == "stopped",
+        _ => true,
+    }
 }
 
 fn state_name(state: ServiceState) -> &'static str {

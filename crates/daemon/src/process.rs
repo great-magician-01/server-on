@@ -1,3 +1,4 @@
+use crate::metrics::RawMetrics;
 use anyhow::{Context, Result, anyhow, bail};
 use server_on_core::config::{RuntimeConfig, ServiceDefinition};
 use std::time::Duration;
@@ -416,6 +417,40 @@ pub async fn journal_logs(
         .lines()
         .map(str::to_owned)
         .collect())
+}
+
+pub async fn systemd_metrics(distribution: &str, unit_name: &str) -> Result<RawMetrics> {
+    let output = wsl_output(
+        distribution,
+        &[
+            "systemctl",
+            "--user",
+            "show",
+            unit_name,
+            "--property=CPUUsageNSec,MemoryCurrent,TasksCurrent",
+        ],
+    )
+    .await?;
+    if !output.status.success() {
+        bail!("读取 WSL systemd 指标失败：{}", output_error(&output));
+    }
+    Ok(crate::metrics::parse_systemd_properties(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+pub async fn process_group_metrics(
+    distribution: &str,
+    process_group_id: u32,
+) -> Result<RawMetrics> {
+    let output = wsl_output(distribution, &["ps", "-e", "-o", "pgid=,rss=,cputimes="]).await?;
+    if !output.status.success() {
+        bail!("读取 WSL 进程组指标失败：{}", output_error(&output));
+    }
+    Ok(crate::metrics::parse_ps_metrics(
+        &String::from_utf8_lossy(&output.stdout),
+        process_group_id,
+    ))
 }
 
 async fn spawn_wsl_process_group(

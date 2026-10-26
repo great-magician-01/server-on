@@ -1,0 +1,29 @@
+export component AppTray inherits SystemTrayIcon {
+    in property <string> summary: "ServerOn · 本地服务管理";
+    title: "ServerOn";
+    tooltip: root.summary;
+    icon: @image-url("../../../assets/icon/tray-32.png");
+    visible: true;
+
+    callback open-window();
+    callback refresh-requested();
+    callback quit-requested();
+
+    clicked => { root.open-window(); }
+
+    Menu {
+        MenuItem {
+            title: "打开 ServerOn";
+            activated => { root.open-window(); }
+        }
+        MenuItem {
+            title: "刷新自动发现";
+            activated => { root.refresh-requested(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "退出 GUI（服务继续运行）";
+            activated => { root.quit-requested(); }
+        }
+    }
+}

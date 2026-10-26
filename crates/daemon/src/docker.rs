@@ -1,3 +1,4 @@
+use crate::metrics::{parse_memory_bytes, parse_percentage};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use server_on_core::discovery::ContainerInfo;
@@ -108,6 +109,11 @@ pub async fn inspect(distribution: &str, container_id: &str) -> Result<Container
             .pointer("/State/Health/Status")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        started_at: value
+            .pointer("/State/StartedAt")
+            .and_then(Value::as_str)
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&chrono::Utc)),
         ports,
         compose_project: labels
             .get("com.docker.compose.project")
@@ -136,6 +142,52 @@ pub fn container_status(container: &ContainerInfo) -> (ServiceState, HealthState
         _ => ServiceState::Unknown,
     };
     (state, health, None)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DockerStats {
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<u64>,
+    pub process_count: Option<u32>,
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn stats(distribution: &str, container_id: &str) -> Result<DockerStats> {
+    let output = run(
+        distribution,
+        &[
+            "docker",
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{json .}}",
+            container_id,
+        ],
+    )
+    .await?;
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    let mut stats = parse_docker_stats(&value);
+    stats.started_at = inspect(distribution, container_id).await?.started_at;
+    Ok(stats)
+}
+
+fn parse_docker_stats(value: &Value) -> DockerStats {
+    DockerStats {
+        cpu_percent: value
+            .get("CPUPerc")
+            .and_then(Value::as_str)
+            .and_then(parse_percentage),
+        memory_bytes: value
+            .get("MemUsage")
+            .and_then(Value::as_str)
+            .and_then(|value| value.split('/').next())
+            .and_then(parse_memory_bytes),
+        process_count: value
+            .get("PIDs")
+            .and_then(Value::as_str)
+            .and_then(|value| value.trim().parse().ok()),
+        started_at: None,
+    }
 }
 
 pub async fn logs(distribution: &str, container_id: &str, lines: usize) -> Result<Vec<String>> {
@@ -184,5 +236,23 @@ async fn run(distribution: &str, arguments: &[&str]) -> Result<Output> {
             stderr
         };
         bail!("{}", message.trim())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_docker_stats_fields() {
+        let value = serde_json::json!({
+            "CPUPerc": "12.5%",
+            "MemUsage": "1.5MiB / 4GiB",
+            "PIDs": "17"
+        });
+        let stats = parse_docker_stats(&value);
+        assert_eq!(stats.cpu_percent, Some(12.5));
+        assert_eq!(stats.memory_bytes, Some(1_572_864));
+        assert_eq!(stats.process_count, Some(17));
     }
 }

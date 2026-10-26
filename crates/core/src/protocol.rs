@@ -1,5 +1,6 @@
-use crate::config::{ServiceDefinition, ServiceId};
+use crate::config::{AppSettings, ServiceDefinition, ServiceId};
 use crate::event::{DaemonEvent, LogEvent};
+use crate::metrics::ServiceMetrics;
 use crate::state::DaemonSnapshot;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -31,7 +32,10 @@ pub enum Command {
     StopService { service_id: ServiceId },
     RestartService { service_id: ServiceId },
     RefreshDiscovery,
+    GetSettings,
+    UpdateSettings(Box<AppSettings>),
     GetLogs { service_id: ServiceId, limit: usize },
+    GetMetrics { service_id: ServiceId },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,7 +59,9 @@ pub enum ResponseData {
     Pong,
     Empty,
     Snapshot(DaemonSnapshot),
+    Settings(Box<AppSettings>),
     Logs(Vec<LogEvent>),
+    Metrics(Box<ServiceMetrics>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

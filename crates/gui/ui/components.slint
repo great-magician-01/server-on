@@ -1,0 +1,183 @@
+import { ServiceItem, LogLine, MetricPoint } from "models.slint";
+import { Theme, Ui } from "theme.slint";
+
+component StatusDot inherits Rectangle {
+    in property <color> tone: Theme.success;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: root.tone;
+}
+
+component Pill inherits Rectangle {
+    in property <string> label: "";
+    in property <color> tone: Theme.text-secondary;
+    height: 24px;
+    border-radius: 12px;
+    background: root.tone.with-alpha(0.11);
+    border-width: 1px;
+    border-color: root.tone.with-alpha(0.2);
+    horizontal-stretch: 0;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 5px;
+        alignment: center;
+        Rectangle { width: 5px; height: 5px; border-radius: 2.5px; background: root.tone; }
+        Text { text: root.label; color: root.tone; font-size: 11px; vertical-alignment: center; }
+    }
+}
+
+component IconButton inherits Rectangle {
+    in property <string> glyph: "·";
+    in property <string> tooltip: "";
+    in property <color> tone: Theme.text-secondary;
+    in property <bool> active: true;
+    callback clicked;
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    opacity: root.active ? 1 : 0.35;
+    background: root.tone.with-alpha(0.06);
+    border-width: 1px;
+    border-color: root.tone.with-alpha(0.12);
+    Text { text: root.glyph; color: root.tone; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
+    ta := TouchArea { enabled: root.active; clicked => { root.clicked(); } }
+    states [ hover when ta.has-hover && root.active: { background: root.tone.with-alpha(0.16); } ]
+    Tooltip { text: @markdown("\{root.tooltip}"); }
+}
+
+component KpiCard inherits Rectangle {
+    in property <string> label: "";
+    in property <string> value: "0";
+    in property <color> tone: Theme.accent;
+    callback clicked;
+    height: 78px;
+    min-width: 0px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-md;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.border-soft;
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 11px;
+        alignment: center;
+        Rectangle { width: 4px; height: 32px; border-radius: 2px; background: root.tone; }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            alignment: center;
+            Text { text: root.label; color: Theme.text-secondary; font-size: 11px; }
+            Text { text: root.value; color: Theme.text; font-size: 24px; font-weight: 600; }
+        }
+        Text { text: "›"; color: Theme.text-muted; font-size: 20px; vertical-alignment: center; }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+    states [ hover when ta.has-hover: { background: Theme.panel-hover; border-color: root.tone.with-alpha(0.35); } ]
+}
+
+component MetricTile inherits Rectangle {
+    in property <string> label: "";
+    in property <string> value: "—";
+    in property <string> unit: "";
+    in property <string> caption: "";
+    in property <color> tone: Theme.accent;
+    in property <[MetricPoint]> history: [];
+    height: 118px;
+    min-width: 0px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-md;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.border-soft;
+    VerticalLayout {
+        padding: 13px;
+        spacing: 5px;
+        Text { text: root.label; color: Theme.text-secondary; font-size: 11px; }
+        HorizontalLayout {
+            spacing: 5px;
+            alignment: end;
+            Text { text: root.value; color: Theme.text; font-size: 22px; font-weight: 600; }
+            Text { text: root.unit; color: Theme.text-muted; font-size: 11px; vertical-alignment: bottom; }
+        }
+        if root.history.length > 0: HorizontalLayout {
+            height: 32px;
+            spacing: 2px;
+            alignment: end;
+            for point in root.history: Rectangle {
+                width: 3px;
+                height: 4px + point.value * 26px;
+                border-radius: 2px;
+                background: root.tone.with-alpha(0.55 + point.value * 0.35);
+            }
+        }
+        if root.history.length == 0: Text { text: root.caption == "" ? "等待采样" : root.caption; color: Theme.text-muted; font-size: 11px; }
+    }
+}
+
+component ServiceRow inherits Rectangle {
+    in property <ServiceItem> item;
+    in property <bool> selected: false;
+    callback select;
+    callback start;
+    callback stop;
+    callback restart;
+    height: 70px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.accent-soft : transparent;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent.with-alpha(0.35) : transparent;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 7px;
+        spacing: 8px;
+        alignment: center;
+        Rectangle {
+            width: 34px; height: 34px; border-radius: 9px;
+            background: Ui.kind-tone(root.item.kind).with-alpha(0.13);
+            Text { text: Ui.kind-glyph(root.item.kind); color: Ui.kind-tone(root.item.kind); font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1; spacing: 4px; alignment: center;
+            Text { text: root.item.name; color: Theme.text; font-size: 12px; font-weight: 500; overflow: elide; }
+            Text { text: root.item.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+        }
+        Pill { label: Ui.state-label(root.item.state); tone: Ui.state-tone(root.item.state); }
+        HorizontalLayout {
+            spacing: 3px;
+            IconButton { glyph: "▶"; tooltip: "启动"; tone: Theme.success; active: root.item.state == "stopped" || root.item.state == "failed"; clicked => { root.start(); } }
+            IconButton { glyph: "■"; tooltip: "停止"; tone: Theme.text-secondary; active: root.item.state == "running" || root.item.state == "degraded"; clicked => { root.stop(); } }
+            IconButton { glyph: "↻"; tooltip: "重启"; tone: Theme.accent; active: root.item.state == "running" || root.item.state == "degraded" || root.item.state == "failed"; clicked => { root.restart(); } }
+        }
+    }
+    ta := TouchArea { clicked => { root.select(); } }
+    states [ hover when ta.has-hover && !root.selected: { background: Theme.panel-hover; } ]
+}
+
+component LogRow inherits HorizontalLayout {
+    in property <LogLine> line;
+    spacing: 9px;
+    alignment: start;
+    Text { text: root.line.time; color: Theme.text-muted; font-family: Theme.mono-font; font-size: 11px; width: 58px; }
+    Text { text: Ui.log-label(root.line.level); color: Ui.log-tone(root.line.level); font-size: 11px; width: 30px; }
+    Text { text: root.line.message; color: Theme.log-text; font-family: Theme.mono-font; font-size: 11px; horizontal-stretch: 1; wrap: word-wrap; }
+}
+
+component Toast inherits Rectangle {
+    in property <string> message: "";
+    in property <color> tone: Theme.accent;
+    height: 42px;
+    border-radius: Theme.radius-md;
+    background: Theme.panel-raised;
+    border-width: 1px;
+    border-color: root.tone.with-alpha(0.35);
+    HorizontalLayout {
+        padding-left: 13px; padding-right: 13px; spacing: 8px; alignment: center;
+        StatusDot { tone: root.tone; }
+        Text { text: root.message; color: Theme.text; font-size: 12px; horizontal-stretch: 1; overflow: elide; }
+    }
+}
+
+export { StatusDot, Pill, IconButton, KpiCard, MetricTile, ServiceRow, LogRow, Toast }

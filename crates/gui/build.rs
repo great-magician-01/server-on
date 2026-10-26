@@ -1,5 +1,5 @@
 fn main() {
-    println!("cargo:rerun-if-changed=ui/main.slint");
+    println!("cargo:rerun-if-changed=ui/app.slint");
     println!("cargo:rerun-if-changed=ui/tray.slint");
     println!("cargo:rerun-if-changed=../../assets/icon/server-on.ico");
     println!("cargo:rerun-if-changed=../../assets/icon/server-on.svg");
@@ -9,8 +9,8 @@ fn main() {
 
     let style = std::env::var("SLINT_STYLE").unwrap_or_else(|_| "fluent-dark".into());
     let config = slint_build::CompilerConfiguration::new().with_style(style);
-    slint_build::compile_with_config("ui/main.slint", config)
-        .expect("failed to compile crates/gui/ui/main.slint");
+    slint_build::compile_with_config("ui/app.slint", config)
+        .expect("failed to compile crates/gui/ui/app.slint");
 
     #[cfg(windows)]
     embed_windows_icon();
@@ -18,7 +18,7 @@ fn main() {
 
 #[cfg(windows)]
 fn embed_windows_icon() {
-    use std::{fs, path::{Path, PathBuf}, process::Command};
+    use std::{fs, path::PathBuf, process::Command};
 
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
@@ -31,36 +31,52 @@ fn embed_windows_icon() {
         rc_icon
     );
     fs::write(&rc_file, rc).expect("failed to write Windows resource script");
-    let rc_exe = find_rc_exe().expect("Windows SDK rc.exe was not found; install the SDK or set RC");
-    let status = Command::new(rc_exe)
-        .arg("/nologo")
+    let rc_exe =
+        find_rc_exe().expect("Windows SDK rc.exe was not found; install the SDK or set RC");
+    let mut command = Command::new(rc_exe);
+    command.arg("/nologo");
+    for directory in resource_include_dirs() {
+        command.arg("/i").arg(directory);
+    }
+    let status = command
         .arg("/fo")
         .arg(&resource_file)
         .arg(&rc_file)
         .status()
         .expect("failed to execute Windows resource compiler");
-    assert!(status.success(), "Windows resource compilation failed: {status}");
-    println!("cargo:rustc-link-arg-bin=server-on={}", resource_file.display());
+    assert!(
+        status.success(),
+        "Windows resource compilation failed: {status}"
+    );
+    println!(
+        "cargo:rustc-link-arg-bin=server-on={}",
+        resource_file.display()
+    );
 }
 
 #[cfg(windows)]
 fn find_rc_exe() -> Option<std::path::PathBuf> {
-    if let Some(path) = std::env::var_os("RC").map(std::path::PathBuf::from) {
-        if path.is_file() {
-            return Some(path);
-        }
+    if let Some(path) = std::env::var_os("RC").map(std::path::PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
     }
-    if let Some(path) = std::env::var_os("RC_EXE").map(std::path::PathBuf::from) {
-        if path.is_file() {
-            return Some(path);
-        }
+    if let Some(path) = std::env::var_os("RC_EXE").map(std::path::PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
     }
     for root in [
         std::path::PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin"),
         std::path::PathBuf::from(r"C:\Program Files\Windows Kits\10\bin"),
     ] {
-        let Ok(entries) = std::fs::read_dir(&root) else { continue };
-        let mut versions: Vec<_> = entries.filter_map(Result::ok).map(|entry| entry.path()).collect();
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut versions: Vec<_> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
         versions.sort();
         versions.reverse();
         for version in versions {
@@ -71,4 +87,32 @@ fn find_rc_exe() -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn resource_include_dirs() -> Vec<std::path::PathBuf> {
+    for root in [
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\Include"),
+        std::path::PathBuf::from(r"C:\Program Files\Windows Kits\10\Include"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut versions: Vec<_> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+        versions.sort();
+        versions.reverse();
+        for version in versions {
+            if version.join("um").join("winver.h").is_file() {
+                return vec![
+                    version.join("um"),
+                    version.join("shared"),
+                    version.join("ucrt"),
+                ];
+            }
+        }
+    }
+    Vec::new()
 }

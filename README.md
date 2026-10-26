@@ -16,8 +16,12 @@ ServerOn 是一个面向 Windows 本地开发环境的原生服务管理器，�
 - TCP/HTTP(S) 健康检查、依赖启动保护、异常退出退避重启。
 - Named Pipe 当前用户 IPC、JSON 配置备份、日志轮转。
 - GUI 新建和编辑 Windows/WSL 服务、状态筛选、实时日志和配置草稿保护。
+- 深浅主题切换及主题偏好持久化。
+- 系统托盘、关闭到托盘、托盘恢复窗口和单实例激活。
+- 选中服务 CPU、内存、进程数、运行时长和有限历史趋势。
+- 原创 SVG 图标、光学小尺寸 PNG、多尺寸 ICO 和 Windows EXE 资源。
 
-产品目标是完整、可长期使用的桌面管理工具。安装发布、系统托盘、资源指标和更多诊断能力仍在继续完善，当前文档不把已完成的核心链路描述为全部产品工作已经结束。
+产品目标是完整、可长期使用的桌面管理工具。安装和便携包脚本已提供，自动更新、配置导入导出和长期稳定性验证仍在继续完善，当前文档不把已完成的核心链路描述为全部产品工作已经结束。
 
 ## 环境要求
 
@@ -27,6 +31,7 @@ ServerOn 是一个面向 Windows 本地开发环境的原生服务管理器，�
 - WSL 中的 Docker Engine，且当前 WSL 用户可以执行 `docker info`。
 - WSL 服务推荐使用 systemd；systemd 不可用时回退到 Linux 进程组管理。
 - HTTP(S) 健康检查使用 Windows 11 自带的 `curl.exe`。
+- 从源码构建 Windows 图标资源时需要 Windows SDK 的 `rc.exe`；正常使用已生成的发布包不需要它。
 
 ## 构建
 
@@ -92,6 +97,9 @@ server-on-cli restart my-api
 
 # 查看最近日志
 server-on-cli logs my-api --lines 100
+
+# 只读查询当前服务的 CPU、内存、进程数和运行时长
+server-on-cli metrics my-api
 ```
 
 添加 Windows 服务：
@@ -156,6 +164,14 @@ docker restart --time <seconds> <container-id>
 - `Running` 仅表示进程或容器运行，`Healthy` 才表示健康检查通过。
 - 依赖为 `Healthy` 时，必须等健康检查通过后才能启动当前服务。
 - 异常退出支持有限次数、延迟退避重启；手动停止或新的手动启动会使旧的延迟重试失效。
+
+## 托盘、主题与资源指标
+
+- 关闭主窗口默认隐藏到托盘，daemon 和服务继续运行；托盘菜单可恢复窗口、刷新发现或退出 GUI。
+- 第二个 GUI 实例会激活已有窗口，不会创建第二个托盘图标。
+- 顶部“浅色/深色”按钮切换主题，选择会保存到 daemon 配置。
+- 概览页只采样当前选中服务：Windows 使用 Job 指标，WSL 使用 systemd/进程组指标，Docker 使用 `docker stats`。CPU 显示机器占比，首次采样没有差值时显示采样中。
+- 图标母版和多尺寸生成说明见 `assets/icon/README.md`。
 
 ## 配置和日志
 

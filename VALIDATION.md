@@ -72,6 +72,30 @@ cargo clippy --workspace --offline -- -D warnings
 4. 用户确认不再弹窗后，恢复隐藏控制台下的自动发现。
 5. 最新 GUI/daemon 联合运行未发现运行时错误输出。
 
+## 本轮产品体验验证
+
+### 图标
+
+- 原创 `Tri-Runtime S-Rail` SVG 已生成完整 PNG、透明托盘 PNG 和多尺寸 ICO。
+- ICO 已验证包含 16/20/24/32/40/48/64/128/256 九种尺寸。
+- 使用 Windows SDK `rc.exe` 嵌入 GUI EXE，已通过 `Icon.ExtractAssociatedIcon` 验证可提取。
+- `build.rs` 已处理 SDK include 路径，离线资源构建通过。
+
+### 托盘与主题
+
+- Slint 原生托盘组件已编译并运行，主窗口关闭后 GUI 进程仍保留。
+- 第二次启动只激活已有窗口，没有创建第二个 GUI 进程或托盘。
+- 浅色/深色主题均已通过原生 UI 自动化实际切换和截图验证。
+- 主题偏好通过 daemon `GetSettings/UpdateSettings` 持久化。
+
+### 资源指标
+
+- Windows 临时服务：首次 CPU 为 `null`，第二次返回有效百分比，内存约 79 MB、进程数 2。
+- WSL systemd 临时服务：CPU、内存和进程数均返回有效值，随后正常停止清理。
+- 现有 PostgreSQL 容器：只读返回 CPU、内存和 PID 数，没有执行启停。
+- 指标走独立 `GetMetrics` 只读通道，不修改服务状态、恢复数据或触发重启。
+- 已修复历史趋势固定宽度导致的指标卡溢出，改为最多 12 个趋势点，概览布局在深色和浅色下均可用。
+
 ## 发布验证
 
 - `cargo build --release --workspace --offline` 通过。
@@ -81,4 +105,4 @@ cargo clippy --workspace --offline -- -D warnings
 
 ## 尚未作为本次验证结论的内容
 
-系统托盘、资源指标、配置导入导出、自动更新和长时间稳定性测试仍属于后续产品工作，不在上述“全部产品工作完成”的含义之内。
+配置导入导出、自动更新和长时间稳定性测试仍属于后续产品工作，不在上述“全部产品工作完成”的含义之内。

@@ -1,0 +1,113 @@
+export global Theme {
+    in-out property <bool> dark: true;
+
+    out property <color> bg: dark ? #0B111B : #F3F6FA;
+    out property <color> bg-deep: dark ? #080D15 : #E8EDF4;
+    out property <color> surface: dark ? #101A28 : #FFFFFF;
+    out property <color> panel: dark ? #121E2D : #FFFFFF;
+    out property <color> panel-raised: dark ? #19293B : #F8FAFD;
+    out property <color> panel-hover: dark ? #1B2C40 : #EDF4FB;
+    out property <color> sidebar: dark ? #0D1622 : #EAF0F7;
+    out property <color> border: dark ? #26384B : #D8E1EC;
+    out property <color> border-soft: dark ? #1B2B3D : #E6EDF5;
+    out property <color> border-strong: dark ? #3B526B : #B9C9DA;
+    out property <color> text: dark ? #EDF4FC : #172435;
+    out property <color> text-secondary: dark ? #A8B8CB : #52657A;
+    out property <color> text-muted: dark ? #71859C : #7A8CA0;
+    out property <color> accent: dark ? #63C3FF : #1677C8;
+    out property <color> accent-strong: dark ? #2FA9F4 : #0E5EA8;
+    out property <color> accent-soft: dark ? #12324A : #DDEFFC;
+    out property <color> success: dark ? #4ADE9C : #138A58;
+    out property <color> warning: dark ? #F5BE6B : #A96708;
+    out property <color> danger: dark ? #FF8295 : #C53C55;
+    out property <color> info: dark ? #82C5FF : #236DB1;
+    out property <color> violet: dark ? #C4B5FD : #7355B5;
+    out property <color> teal: dark ? #5EEAD4 : #0C8B82;
+    out property <color> pink: dark ? #F5A4C5 : #B34479;
+    out property <color> log-bg: dark ? #0A121C : #F5F8FB;
+    out property <color> log-text: dark ? #C3D2E2 : #40556A;
+    out property <color> overlay-hover: dark ? #FFFFFF08 : #0B355408;
+    out property <color> shadow: dark ? #00000040 : #17304D12;
+    out property <string> ui-font: "Microsoft YaHei UI";
+    out property <string> mono-font: "Cascadia Mono";
+    out property <length> radius-sm: 6px;
+    out property <length> radius-md: 10px;
+    out property <length> radius-lg: 14px;
+}
+
+export global Ui {
+    public pure function state-label(state: string) -> string {
+        if state == "running" { return "运行中"; }
+        if state == "starting" { return "启动中"; }
+        if state == "stopping" { return "停止中"; }
+        if state == "stopped" { return "已停止"; }
+        if state == "failed" { return "失败"; }
+        if state == "degraded" { return "降级"; }
+        if state == "unknown" { return "未知"; }
+        if state == "missing" { return "已丢失"; }
+        return "未知";
+    }
+    public pure function state-tone(state: string) -> color {
+        if state == "running" { return Theme.success; }
+        if state == "starting" { return Theme.info; }
+        if state == "stopping" { return Theme.warning; }
+        if state == "failed" { return Theme.danger; }
+        if state == "degraded" { return Theme.warning; }
+        if state == "unknown" { return Theme.violet; }
+        if state == "missing" { return Theme.pink; }
+        return Theme.text-muted;
+    }
+    public pure function health-label(health: string) -> string {
+        if health == "healthy" { return "健康"; }
+        if health == "unhealthy" { return "异常"; }
+        if health == "checking" { return "检查中"; }
+        if health == "unknown" { return "未知"; }
+        return "未配置";
+    }
+    public pure function health-tone(health: string) -> color {
+        if health == "healthy" { return Theme.success; }
+        if health == "unhealthy" { return Theme.danger; }
+        if health == "checking" { return Theme.info; }
+        if health == "unknown" { return Theme.warning; }
+        return Theme.text-muted;
+    }
+    public pure function kind-label(kind: string) -> string {
+        if kind == "windows" { return "Windows"; }
+        if kind == "wsl" { return "WSL"; }
+        if kind == "container" { return "容器"; }
+        return kind;
+    }
+    public pure function kind-glyph(kind: string) -> string {
+        if kind == "windows" { return "W"; }
+        if kind == "wsl" { return ">_"; }
+        if kind == "container" { return "▣"; }
+        return "·";
+    }
+    public pure function kind-tone(kind: string) -> color {
+        if kind == "windows" { return Theme.info; }
+        if kind == "wsl" { return Theme.violet; }
+        if kind == "container" { return Theme.teal; }
+        return Theme.text-muted;
+    }
+    public pure function engine-tone(engine: string) -> color {
+        if engine == "available" { return Theme.success; }
+        if engine == "stopped" { return Theme.danger; }
+        if engine == "unknown" { return Theme.warning; }
+        return Theme.text-muted;
+    }
+    public pure function log-label(level: string) -> string {
+        if level == "stderr" || level == "error" { return "错误"; }
+        if level == "warn" { return "警告"; }
+        if level == "info" { return "信息"; }
+        if level == "stdout" { return "输出"; }
+        if level == "system" { return "系统"; }
+        return level;
+    }
+    public pure function log-tone(level: string) -> color {
+        if level == "stderr" || level == "error" { return Theme.danger; }
+        if level == "warn" { return Theme.warning; }
+        if level == "info" { return Theme.info; }
+        if level == "system" { return Theme.violet; }
+        return Theme.text-secondary;
+    }
+}
