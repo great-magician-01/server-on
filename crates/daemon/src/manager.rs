@@ -24,8 +24,17 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::broadcast;
 
+// Lock acquisition order for the sync locks below (never hold one across
+// an .await): config_commit -> config -> operations -> restart_attempts ->
+// controllers -> statuses. In particular, never take restart_attempts while
+// holding statuses: the failure-restart task holds restart_attempts while
+// reading statuses, so the reverse order would deadlock.
 pub struct ManagerInner {
     config: RwLock<AppConfig>,
+    // Serializes the read-clone-validate-save-swap cycles in
+    // upsert_service/remove_service/update_settings/refresh_discovery so
+    // concurrent editors cannot silently drop each other's changes.
+    config_commit: Mutex<()>,
     statuses: RwLock<BTreeMap<ServiceId, ServiceStatus>>,
     discovery: RwLock<DiscoverySnapshot>,
     discovered_at: RwLock<Option<chrono::DateTime<Utc>>>,
@@ -88,6 +97,7 @@ impl ServiceManager {
         Ok(Self {
             inner: Arc::new(ManagerInner {
                 config: RwLock::new(config),
+                config_commit: Mutex::new(()),
                 statuses: RwLock::new(statuses),
                 discovery: RwLock::new(DiscoverySnapshot::default()),
                 discovered_at: RwLock::new(None),
@@ -133,6 +143,7 @@ impl ServiceManager {
     }
 
     pub fn upsert_service(&self, definition: ServiceDefinition) -> Result<()> {
+        let _commit = self.inner.config_commit.lock().unwrap();
         if definition.origin != ServiceOrigin::User {
             bail!("自动发现的容器不能通过服务编辑器修改");
         }
@@ -170,6 +181,7 @@ impl ServiceManager {
     }
 
     pub fn remove_service(&self, service_id: &ServiceId) -> Result<()> {
+        let _commit = self.inner.config_commit.lock().unwrap();
         self.inner.metrics_cache.lock().unwrap().remove(service_id);
         if self
             .inner
@@ -208,6 +220,9 @@ impl ServiceManager {
             .discovery
             .scan_stopped_distributions;
         let snapshot = DiscoveryManager::new(scan_stopped).discover().await?;
+        // The commit lock is only held over the synchronous reconcile section;
+        // all awaits in this method happen before it is taken.
+        let _commit = self.inner.config_commit.lock().unwrap();
         let mut config = self.inner.config.read().unwrap().clone();
         let original_config = config.clone();
         let mut statuses = self.inner.statuses.write().unwrap();
@@ -887,11 +902,16 @@ impl ServiceManager {
             Ok(exit) => (exit.code, None, exit.expected),
             Err(error) => (None, Some(error.to_string()), false),
         };
-        let mut statuses = self.inner.statuses.write().unwrap();
-        let Some(status) = statuses.get_mut(service_id) else {
-            return;
-        };
-        let was_stopping = status.state == ServiceState::Stopping;
+        // Restart bookkeeping must happen before the statuses write lock is
+        // taken: the delayed restart task holds restart_attempts while reading
+        // statuses, so locking in the other order here would deadlock.
+        let was_stopping = self
+            .inner
+            .statuses
+            .read()
+            .unwrap()
+            .get(service_id)
+            .is_some_and(|status| status.state == ServiceState::Stopping);
         let mut retry = None;
         let restart_policy = if !was_stopping && !expected && code != Some(0) {
             self.definition(service_id)
@@ -915,6 +935,10 @@ impl ServiceManager {
                 retry = Some((*attempt, delay_seconds));
             }
         }
+        let mut statuses = self.inner.statuses.write().unwrap();
+        let Some(status) = statuses.get_mut(service_id) else {
+            return;
+        };
         status.state = if was_stopping || expected || code == Some(0) {
             ServiceState::Stopped
         } else {
@@ -1203,6 +1227,7 @@ impl ServiceManager {
     }
 
     pub fn update_settings(&self, settings: server_on_core::config::AppSettings) -> Result<()> {
+        let _commit = self.inner.config_commit.lock().unwrap();
         let mut config = self.inner.config.read().unwrap().clone();
         config.settings = settings;
         config.validate()?;
@@ -1454,5 +1479,163 @@ fn emit_view_inner(inner: &Arc<ManagerInner>, service_id: &ServiceId) {
                 definition,
                 status,
             })));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::ProcessExit;
+
+    fn test_manager() -> (ServiceManager, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let manager =
+            ServiceManager::new(AppPaths::from_root(directory.path().to_path_buf())).unwrap();
+        (manager, directory)
+    }
+
+    #[tokio::test]
+    async fn operations_are_mutually_exclusive_and_guard_releases_state() {
+        let (manager, _directory) = test_manager();
+        let definition = ServiceDefinition::windows_script("api", "D:\\tmp", "echo hi");
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+
+        let guard = manager.begin_operation(&id, OperationKind::Start).unwrap();
+        assert!(manager.begin_operation(&id, OperationKind::Stop).is_err());
+        let statuses = manager.inner.statuses.read().unwrap();
+        assert_eq!(
+            statuses.get(&id).unwrap().active_operation,
+            Some(OperationKind::Start)
+        );
+        assert_eq!(statuses.get(&id).unwrap().state, ServiceState::Starting);
+        drop(statuses);
+        drop(guard);
+        let statuses = manager.inner.statuses.read().unwrap();
+        assert!(statuses.get(&id).unwrap().active_operation.is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_rejects_while_another_operation_is_active() {
+        let (manager, _directory) = test_manager();
+        let definition = ServiceDefinition::windows_script("api", "D:\\tmp", "echo hi");
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+
+        let _guard = manager.begin_operation(&id, OperationKind::Start).unwrap();
+        assert!(manager.stop(&id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn start_rejects_disabled_services() {
+        let (manager, _directory) = test_manager();
+        let mut definition = ServiceDefinition::windows_script("api", "D:\\tmp", "echo hi");
+        definition.enabled = false;
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+        assert!(manager.start(&id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_exits_consume_restart_attempts() {
+        let (manager, _directory) = test_manager();
+        let mut definition =
+            ServiceDefinition::wsl_script("api", "ubuntu", "/home/user/app", "echo hi");
+        definition.restart_policy = RestartPolicy::OnFailure {
+            max_attempts: 2,
+            // The delayed restart task sleeps this long and never runs in the
+            // test; it is dropped with the runtime.
+            delay_seconds: u64::MAX,
+        };
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+
+        manager.process_exited(
+            &id,
+            Ok(ProcessExit {
+                code: Some(1),
+                expected: false,
+            }),
+        );
+        assert_eq!(
+            manager.inner.restart_attempts.lock().unwrap().get(&id),
+            Some(&1)
+        );
+        assert_eq!(
+            manager
+                .inner
+                .statuses
+                .read()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .state,
+            ServiceState::Failed
+        );
+
+        manager.process_exited(
+            &id,
+            Ok(ProcessExit {
+                code: Some(1),
+                expected: false,
+            }),
+        );
+        assert_eq!(
+            manager.inner.restart_attempts.lock().unwrap().get(&id),
+            Some(&2)
+        );
+
+        manager.process_exited(
+            &id,
+            Ok(ProcessExit {
+                code: Some(1),
+                expected: false,
+            }),
+        );
+        assert_eq!(
+            manager.inner.restart_attempts.lock().unwrap().get(&id),
+            Some(&2)
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_exit_marks_stopped_without_restart() {
+        let (manager, _directory) = test_manager();
+        let mut definition =
+            ServiceDefinition::wsl_script("api", "ubuntu", "/home/user/app", "echo hi");
+        definition.restart_policy = RestartPolicy::OnFailure {
+            max_attempts: 3,
+            delay_seconds: u64::MAX,
+        };
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+
+        manager.process_exited(
+            &id,
+            Ok(ProcessExit {
+                code: Some(0),
+                expected: false,
+            }),
+        );
+        assert_eq!(
+            manager
+                .inner
+                .statuses
+                .read()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .state,
+            ServiceState::Stopped
+        );
+        assert!(
+            manager
+                .inner
+                .restart_attempts
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_none()
+        );
     }
 }
