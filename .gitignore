@@ -1,0 +1,16 @@
+# Rust build output (matches nested crates/tools too)
+target/
+dist/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local build and run artifacts
+*.rs.bk
+*.log
+*.pdb
+.tmp-*
+gui-smoke.png

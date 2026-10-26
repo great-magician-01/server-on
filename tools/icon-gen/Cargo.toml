@@ -1,0 +1,9 @@
+[package]
+name = "icon-gen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+resvg = "=0.48.1"
+image = { version = "=0.25.10", default-features = false, features = ["ico", "png"] }

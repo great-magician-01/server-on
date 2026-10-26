@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="ServerOn tray">
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M372 148 C331 103 218 103 168 151 C126 191 137 238 193 260" stroke="#07111D" stroke-opacity="0.7" stroke-width="78"/>
+    <path d="M205 267 C264 291 380 269 377 326" stroke="#07111D" stroke-opacity="0.7" stroke-width="78"/>
+    <path d="M365 338 C348 387 260 405 177 365" stroke="#07111D" stroke-opacity="0.7" stroke-width="78"/>
+    <path d="M372 148 C331 103 218 103 168 151 C126 191 137 238 193 260" stroke="#7DD3FC" stroke-width="54"/>
+    <path d="M205 267 C264 291 380 269 377 326" stroke="#C4B5FD" stroke-width="54"/>
+    <path d="M365 338 C348 387 260 405 177 365" stroke="#5EEAD4" stroke-width="54"/>
+  </g>
+</svg>

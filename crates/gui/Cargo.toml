@@ -1,0 +1,21 @@
+[package]
+name = "server-on-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "server-on"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+server-on-core.workspace = true
+server-on-daemon.workspace = true
+slint = { version = "=1.18.1", features = ["system-tray"] }
+tokio.workspace = true
+
+[build-dependencies]
+slint-build = "=1.18.1"

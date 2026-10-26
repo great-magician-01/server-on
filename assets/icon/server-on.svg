@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="ServerOn">
+  <defs>
+    <linearGradient id="tile" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#18334D"/>
+      <stop offset="0.55" stop-color="#0C1A29"/>
+      <stop offset="1" stop-color="#070D16"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.12" r="0.82">
+      <stop offset="0" stop-color="#4CB8FF" stop-opacity="0.24"/>
+      <stop offset="0.6" stop-color="#4CB8FF" stop-opacity="0.035"/>
+      <stop offset="1" stop-color="#4CB8FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="80" y1="40" x2="440" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9BE1FF" stop-opacity="0.62"/>
+      <stop offset="0.5" stop-color="#4CB8FF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#B9A4FF" stop-opacity="0.32"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#tile)"/>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#glow)"/>
+  <rect x="26" y="26" width="460" height="460" rx="110" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <g fill="none" stroke-width="58" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M372 148 C331 103 218 103 168 151 C126 191 137 238 193 260" stroke="#4CB8FF"/>
+    <path d="M205 267 C264 291 380 269 377 326" stroke="#B9A4FF"/>
+    <path d="M365 338 C348 387 260 405 177 365" stroke="#45D4C4"/>
+  </g>
+  <path d="M109 365H136" stroke="#45D4C4" stroke-opacity="0.65" stroke-width="12" stroke-linecap="round"/>
+</svg>

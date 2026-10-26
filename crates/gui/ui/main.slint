@@ -1,0 +1,2619 @@
+// ServerOn — native Windows / WSL / Docker local service manager.
+//
+// This file is intentionally self-contained: all visual assets are drawn with
+// Slint primitives or provided by the built-in Fluent widget set. The public
+// properties below are populated by the Rust GUI host; see README.md for the
+// mapping from the daemon snapshot to these models.
+//
+// Slint 1.x / fluent-dark.
+
+import {
+    Button,
+    CheckBox,
+    LineEdit,
+    ScrollView,
+    SpinBox,
+    Switch,
+    TextEdit,
+} from "std-widgets.slint";
+
+global Theme {
+    out property <color> bg: #0B0F14;
+    out property <color> bg-deep: #080B10;
+    out property <color> surface: #0F151C;
+    out property <color> panel: #121922;
+    out property <color> panel-hover: #17212C;
+    out property <color> panel-raised: #19232E;
+    out property <color> sidebar: #0C1117;
+    out property <color> border: #222D39;
+    out property <color> border-soft: #19222C;
+    out property <color> border-strong: #2C3A49;
+    out property <color> text: #E9EFF7;
+    out property <color> text-secondary: #9AA8B9;
+    out property <color> text-muted: #657386;
+    out property <color> accent: #4CB8FF;
+    out property <color> accent-strong: #249BE7;
+    out property <color> accent-soft: #112C3D;
+    out property <color> success: #3DDC97;
+    out property <color> warning: #F4B860;
+    out property <color> danger: #FF7186;
+    out property <color> info: #72B7FF;
+    out property <color> violet: #B9A4FF;
+    out property <color> teal: #45D4C4;
+    out property <color> pink: #F58BB8;
+    out property <string> mono-font: "Cascadia Mono";
+}
+
+global Ui {
+    public pure function state-label(state: string) -> string {
+        if state == "running" { return "运行中"; }
+        if state == "starting" { return "启动中"; }
+        if state == "stopping" { return "停止中"; }
+        if state == "stopped" { return "已停止"; }
+        if state == "failed" { return "失败"; }
+        if state == "degraded" { return "降级"; }
+        if state == "unknown" { return "未知"; }
+        if state == "missing" { return "已丢失"; }
+        return "未知";
+    }
+
+    public pure function state-tone(state: string) -> color {
+        if state == "running" { return Theme.success; }
+        if state == "starting" { return Theme.info; }
+        if state == "stopping" { return Theme.warning; }
+        if state == "failed" { return Theme.danger; }
+        if state == "degraded" { return Theme.warning; }
+        if state == "unknown" { return Theme.violet; }
+        if state == "missing" { return Theme.pink; }
+        return Theme.text-muted;
+    }
+
+    public pure function health-label(health: string) -> string {
+        if health == "healthy" { return "健康"; }
+        if health == "unhealthy" { return "异常"; }
+        if health == "checking" { return "检查中"; }
+        if health == "not-configured" { return "未配置"; }
+        if health == "unknown" { return "未知"; }
+        return health == "" ? "未配置" : health;
+    }
+
+    public pure function health-tone(health: string) -> color {
+        if health == "healthy" { return Theme.success; }
+        if health == "unhealthy" { return Theme.danger; }
+        if health == "checking" { return Theme.info; }
+        if health == "unknown" { return Theme.warning; }
+        return Theme.text-muted;
+    }
+
+    public pure function kind-label(kind: string) -> string {
+        if kind == "windows" { return "Windows"; }
+        if kind == "wsl" { return "WSL"; }
+        if kind == "container" { return "容器"; }
+        return kind;
+    }
+
+    public pure function kind-glyph(kind: string) -> string {
+        if kind == "windows" { return "W"; }
+        if kind == "wsl" { return ">_"; }
+        if kind == "container" { return "▣"; }
+        return "·";
+    }
+
+    public pure function kind-tone(kind: string) -> color {
+        if kind == "windows" { return Theme.info; }
+        if kind == "wsl" { return Theme.violet; }
+        if kind == "container" { return Theme.teal; }
+        return Theme.text-muted;
+    }
+
+    public pure function engine-tone(engine: string) -> color {
+        if engine == "available" { return Theme.success; }
+        if engine == "unavailable" { return Theme.danger; }
+        if engine == "unknown" { return Theme.warning; }
+        return Theme.text-muted;
+    }
+
+    public pure function log-label(level: string) -> string {
+        if level == "error" || level == "stderr" { return "错误"; }
+        if level == "warn" { return "警告"; }
+        if level == "info" { return "信息"; }
+        if level == "stdout" { return "输出"; }
+        if level == "system" { return "系统"; }
+        if level == "debug" { return "调试"; }
+        return level;
+    }
+
+    public pure function log-tone(level: string) -> color {
+        if level == "error" || level == "stderr" { return Theme.danger; }
+        if level == "warn" { return Theme.warning; }
+        if level == "info" { return Theme.info; }
+        if level == "system" { return Theme.violet; }
+        if level == "debug" { return Theme.text-muted; }
+        return Theme.text-secondary;
+    }
+
+    public pure function log-message-tone(level: string) -> color {
+        if level == "error" || level == "stderr" { return #FFC2CB; }
+        if level == "warn" { return #F9DAA8; }
+        return Theme.text-secondary;
+    }
+
+    public pure function filter-title(filter: string) -> string {
+        if filter == "running" { return "运行中的服务"; }
+        if filter == "issues" { return "需要关注"; }
+        if filter == "stopped" { return "已停止的服务"; }
+        return "全部服务";
+    }
+}
+
+export struct ServiceItem {
+    id: string,
+    name: string,
+    kind: string,
+    distribution: string,
+    subtitle: string,
+    state: string,
+    health: string,
+    matches-search: bool,
+}
+
+export struct DistributionItem {
+    name: string,
+    version: string,
+    state: string,
+    engine-state: string,
+    engine-label: string,
+    container-count: int,
+}
+
+export struct LogLine {
+    time: string,
+    level: string,
+    message: string,
+}
+
+export struct ServiceConfig {
+    id: string,
+    name: string,
+    runtime-kind: string,
+    type-label: string,
+    origin-label: string,
+    state: string,
+    health: string,
+    detail: string,
+    status-message: string,
+    distribution: string,
+    working-directory: string,
+    shell: string,
+    script: string,
+    environment: string,
+    health-check-kind: string,
+    health-target: string,
+    stop-timeout: int,
+    auto-start: bool,
+    restart-policy: string,
+    ports: string,
+    pid: string,
+    uptime: string,
+    cpu: string,
+    memory: string,
+}
+
+component StatusDot inherits Rectangle {
+    in property <color> tone: Theme.success;
+    in property <bool> halo: false;
+
+    width: 8px;
+    height: 8px;
+    background: transparent;
+
+    if root.halo : Rectangle {
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 7px;
+        background: root.tone.with-alpha(0.13);
+    }
+
+    Rectangle {
+        width: 6px;
+        height: 6px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 3px;
+        background: root.tone;
+    }
+}
+
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <color> tone: Theme.text-secondary;
+    in property <bool> dot: true;
+
+    height: 22px;
+    horizontal-stretch: 0;
+    border-radius: 11px;
+    background: root.tone.with-alpha(0.10);
+    border-width: 1px;
+    border-color: root.tone.with-alpha(0.22);
+    vertical-stretch: 0;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 9px;
+        spacing: 5px;
+        alignment: center;
+
+        if root.dot : Rectangle {
+            width: 5px;
+            height: 5px;
+            border-radius: 2.5px;
+            background: root.tone;
+        }
+
+        Text {
+            text: root.text;
+            color: root.tone;
+            font-size: 11px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component HealthLabel inherits HorizontalLayout {
+    in property <string> health: "not-configured";
+
+    spacing: 5px;
+    alignment: center;
+
+    Rectangle {
+        width: 5px;
+        height: 5px;
+        border-radius: 2.5px;
+        background: Ui.health-tone(root.health);
+    }
+
+    Text {
+        text: Ui.health-label(root.health);
+        color: Ui.health-tone(root.health);
+        font-size: 11px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component IconAction inherits Rectangle {
+    in property <string> glyph;
+    in property <string> tooltip;
+    in property <color> tone: Theme.text-secondary;
+    in property <bool> available: true;
+    callback clicked;
+
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: transparent;
+    opacity: root.available ? 1 : 0.32;
+    animate background { duration: 100ms; }
+
+    Text {
+        text: root.glyph;
+        color: root.tone;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    ta := TouchArea {
+        enabled: root.available;
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && root.available : {
+            background: root.tone.with-alpha(0.10);
+        }
+        pressed when ta.pressed && root.available : {
+            background: root.tone.with-alpha(0.16);
+        }
+    ]
+
+    Tooltip {
+        text: @markdown("\{root.tooltip}");
+    }
+}
+
+component QuickAction inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <color> tone: Theme.text-secondary;
+    in property <bool> available: true;
+    callback clicked;
+
+    height: 28px;
+    horizontal-stretch: 1;
+    border-radius: 6px;
+    background: root.tone.with-alpha(root.available ? 0.08 : 0.03);
+    border-width: 1px;
+    border-color: root.tone.with-alpha(root.available ? 0.18 : 0.08);
+    opacity: root.available ? 1 : 0.34;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 4px;
+        padding-left: 4px;
+        padding-right: 4px;
+
+        Text {
+            text: root.glyph;
+            color: root.tone;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.label;
+            color: root.tone;
+            font-size: 11px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.available;
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && root.available : {
+            background: root.tone.with-alpha(0.14);
+        }
+        pressed when ta.pressed && root.available : {
+            background: root.tone.with-alpha(0.20);
+        }
+    ]
+
+    Tooltip {
+        text: @markdown("\{root.label}服务");
+    }
+}
+
+component FilterChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked;
+
+    height: 30px;
+    horizontal-stretch: 0;
+    border-radius: 7px;
+    background: root.active ? Theme.accent-soft : transparent;
+    border-width: 1px;
+    border-color: root.active ? #2B5A76 : transparent;
+    animate background, border-color { duration: 120ms; }
+
+    Text {
+        text: root.label;
+        color: root.active ? Theme.accent : Theme.text-secondary;
+        font-size: 11.5px;
+        font-weight: root.active ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && !root.active : {
+            background: Theme.panel-hover;
+        }
+    ]
+
+    accessible-role: button;
+    accessible-label: root.label;
+}
+
+component NavRow inherits Rectangle {
+    in property <string> label;
+    in property <int> count: 0;
+    in property <string> glyph;
+    in property <color> tone: Theme.text-muted;
+    in property <bool> selected: false;
+    callback clicked;
+
+    height: 32px;
+    border-radius: 7px;
+    background: root.selected ? Theme.accent-soft : transparent;
+    animate background { duration: 120ms; }
+
+    Rectangle {
+        visible: root.selected;
+        x: 0;
+        y: 8px;
+        width: 2px;
+        height: 16px;
+        border-radius: 1px;
+        background: Theme.accent;
+    }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 9px;
+
+        Text {
+            text: root.glyph;
+            color: root.selected ? Theme.accent : root.tone;
+            font-size: 11px;
+            width: 16px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.label;
+            color: root.selected ? Theme.text : Theme.text-secondary;
+            font-size: 12px;
+            font-weight: root.selected ? 500 : 400;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        Text {
+            text: "" + root.count;
+            color: root.selected ? Theme.accent : Theme.text-muted;
+            font-size: 10.5px;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && !root.selected : {
+            background: #FFFFFF06;
+        }
+    ]
+
+    accessible-role: button;
+    accessible-label: root.label;
+}
+
+component SidebarHeading inherits Rectangle {
+    in property <string> title;
+    in property <string> count-text;
+
+    height: 28px;
+
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        alignment: center;
+
+        Text {
+            text: root.title;
+            color: Theme.text-muted;
+            font-size: 9.5px;
+            font-weight: 600;
+            letter-spacing: 0.7px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.count-text;
+            color: Theme.text-muted;
+            font-size: 9.5px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component SidebarService inherits Rectangle {
+    in property <ServiceItem> item;
+    in property <bool> selected: false;
+    in property <length> indent: 0px;
+    callback select;
+
+    height: 30px;
+    border-radius: 6px;
+    background: root.selected ? Theme.accent-soft : transparent;
+    animate background { duration: 100ms; }
+
+    HorizontalLayout {
+        padding-left: 10px + root.indent;
+        padding-right: 8px;
+        spacing: 7px;
+        alignment: center;
+
+        StatusDot {
+            tone: Ui.state-tone(root.item.state);
+        }
+
+        Text {
+            text: root.item.name;
+            color: root.selected ? Theme.text : Theme.text-secondary;
+            font-size: 11.5px;
+            font-weight: root.selected ? 500 : 400;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.item.kind == "container" ? "容器" : "";
+            color: Theme.text-muted;
+            font-size: 9px;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => { root.select(); }
+    }
+
+    states [
+        hover when ta.has-hover && !root.selected : {
+            background: #FFFFFF06;
+        }
+    ]
+
+    Tooltip {
+        text: @markdown("\{root.item.name} · \{Ui.state-label(root.item.state)}");
+    }
+
+    accessible-role: button;
+    accessible-label: root.item.name;
+}
+
+component ServiceRow inherits Rectangle {
+    in property <ServiceItem> item;
+    in property <bool> selected: false;
+    callback select;
+    callback start;
+    callback stop;
+    callback restart;
+
+    height: 64px;
+    border-radius: 8px;
+    background: root.selected ? #112230 : transparent;
+    border-width: 1px;
+    border-color: root.selected ? #284B61 : transparent;
+    animate background, border-color { duration: 120ms; }
+
+    Rectangle {
+        visible: root.selected;
+        x: 0;
+        y: 16px;
+        width: 2px;
+        height: 32px;
+        border-radius: 1px;
+        background: Theme.accent;
+    }
+
+    ta := TouchArea {
+        clicked => { root.select(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 10px;
+        alignment: center;
+
+        Rectangle {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: Ui.kind-tone(root.item.kind).with-alpha(0.11);
+            border-width: 1px;
+            border-color: Ui.kind-tone(root.item.kind).with-alpha(0.20);
+            vertical-stretch: 0;
+
+            Text {
+                text: Ui.kind-glyph(root.item.kind);
+                color: Ui.kind-tone(root.item.kind);
+                font-size: root.item.kind == "container" ? 15px : 11px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            alignment: center;
+
+            Text {
+                text: root.item.name;
+                color: Theme.text;
+                font-size: 12.5px;
+                font-weight: 500;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.item.subtitle;
+                color: Theme.text-muted;
+                font-size: 10.5px;
+                overflow: elide;
+            }
+        }
+
+        Pill {
+            text: Ui.state-label(root.item.state);
+            tone: Ui.state-tone(root.item.state);
+        }
+
+        HealthLabel {
+            health: root.item.health;
+            width: 56px;
+        }
+
+        HorizontalLayout {
+            spacing: 2px;
+            horizontal-stretch: 0;
+
+            IconAction {
+                glyph: "▶";
+                tooltip: "启动服务";
+                tone: Theme.success;
+                available: root.item.state == "stopped" || root.item.state == "failed";
+                clicked => { root.start(); }
+            }
+
+            IconAction {
+                glyph: "■";
+                tooltip: "停止服务";
+                tone: Theme.text-secondary;
+                available: root.item.state == "running" || root.item.state == "degraded";
+                clicked => { root.stop(); }
+            }
+
+            IconAction {
+                glyph: "↻";
+                tooltip: "重启服务";
+                tone: Theme.accent;
+                available: root.item.state == "running" || root.item.state == "degraded"
+                    || root.item.state == "failed";
+                clicked => { root.restart(); }
+            }
+        }
+    }
+
+    states [
+        hover when ta.has-hover && !root.selected : {
+            background: Theme.panel-hover;
+        }
+    ]
+
+    accessible-role: list-item;
+    accessible-label: root.item.name + "，" + Ui.state-label(root.item.state);
+}
+
+component SummaryStat inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+
+    spacing: 1px;
+
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        font-size: 9.5px;
+        font-weight: 500;
+        letter-spacing: 0.4px;
+    }
+
+    Text {
+        text: root.value;
+        color: Theme.text;
+        font-size: 12px;
+        font-weight: 500;
+        overflow: elide;
+    }
+}
+
+component SegmentButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked;
+
+    height: 26px;
+    horizontal-stretch: 1;
+    border-radius: 5px;
+    background: root.active ? Theme.panel-raised : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.border-strong;
+    animate background { duration: 100ms; }
+
+    Text {
+        text: root.label;
+        color: root.active ? Theme.text : Theme.text-muted;
+        font-size: 10.5px;
+        font-weight: root.active ? 500 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && !root.active : {
+            background: #FFFFFF06;
+        }
+    ]
+
+    accessible-role: button;
+    accessible-label: root.label;
+}
+
+component ReadOnlyField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+
+    spacing: 2px;
+
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        font-size: 9.5px;
+        font-weight: 500;
+        letter-spacing: 0.3px;
+    }
+
+    Text {
+        text: root.value;
+        color: Theme.text;
+        font-size: 11.5px;
+        overflow: elide;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "ServerOn · 本地服务管理器";
+    icon: @image-url("../../../assets/icon/server-on-256.png");
+    preferred-width: 1440px;
+    preferred-height: 900px;
+    min-width: 1060px;
+    min-height: 700px;
+    background: @linear-gradient(165deg, #0C1219 0%, #0B0F14 60%, #090D12 100%);
+    default-font-family: "Segoe UI";
+    default-font-size: 12px;
+    default-font-weight: 400;
+
+    // ---------------------------------------------------------------------
+    // Data models. Rust replaces these demo values with the daemon snapshot.
+    // ---------------------------------------------------------------------
+    in-out property <[ServiceItem]> services: [
+        {
+            id: "api-gateway",
+            name: "api-gateway",
+            kind: "windows",
+            distribution: "",
+            subtitle: "Windows · PowerShell · 127.0.0.1:8080",
+            state: "running",
+            health: "healthy",
+            matches-search: true,
+        },
+        {
+            id: "web-admin",
+            name: "web-admin",
+            kind: "windows",
+            distribution: "",
+            subtitle: "Windows · PowerShell · 127.0.0.1:5173",
+            state: "degraded",
+            health: "unhealthy",
+            matches-search: true,
+        },
+        {
+            id: "worker-sync",
+            name: "worker-sync",
+            kind: "windows",
+            distribution: "",
+            subtitle: "Windows · PowerShell · 定时同步任务",
+            state: "stopped",
+            health: "not-configured",
+            matches-search: true,
+        },
+        {
+            id: "search-indexer",
+            name: "search-indexer",
+            kind: "wsl",
+            distribution: "Ubuntu",
+            subtitle: "Ubuntu · Bash · 127.0.0.1:9200",
+            state: "running",
+            health: "healthy",
+            matches-search: true,
+        },
+        {
+            id: "project-a-db-1",
+            name: "project-a-db-1",
+            kind: "container",
+            distribution: "Ubuntu",
+            subtitle: "postgres:16-alpine · 5432 → 5432",
+            state: "running",
+            health: "healthy",
+            matches-search: true,
+        },
+        {
+            id: "project-a-api-1",
+            name: "project-a-api-1",
+            kind: "container",
+            distribution: "Ubuntu",
+            subtitle: "ghcr.io/acme/api:1.8 · 退出码 1",
+            state: "failed",
+            health: "not-configured",
+            matches-search: true,
+        },
+        {
+            id: "redis-test",
+            name: "redis-test",
+            kind: "container",
+            distribution: "Ubuntu",
+            subtitle: "redis:7-alpine · 6379 → 6379",
+            state: "running",
+            health: "not-configured",
+            matches-search: true,
+        },
+        {
+            id: "docs-site",
+            name: "docs-site",
+            kind: "container",
+            distribution: "Ubuntu",
+            subtitle: "nginx:alpine · 8088 → 80",
+            state: "stopped",
+            health: "not-configured",
+            matches-search: true,
+        },
+    ];
+
+    in-out property <[DistributionItem]> distributions: [
+        {
+            name: "Ubuntu",
+            version: "WSL 2",
+            state: "running",
+            engine-state: "available",
+            engine-label: "Docker 27.3 · 引擎可用",
+            container-count: 4,
+        },
+        {
+            name: "Debian",
+            version: "WSL 2",
+            state: "stopped",
+            engine-state: "unscanned",
+            engine-label: "尚未扫描 · 发行版已停止",
+            container-count: 0,
+        },
+    ];
+
+    in-out property <[LogLine]> logs: [
+        { time: "10:42:08", level: "system", message: "守护进程已连接 · 已订阅状态与日志事件" },
+        { time: "10:42:09", level: "info", message: "使用 PowerShell 7 启动受管进程树（Job Object）" },
+        { time: "10:42:10", level: "stdout", message: "> api-gateway@0.4.2 start" },
+        { time: "10:42:10", level: "stdout", message: "Server listening on http://127.0.0.1:8080" },
+        { time: "10:42:12", level: "info", message: "健康检查通过 · HTTP 200 · 84 ms" },
+        { time: "10:47:31", level: "warn", message: "检测到 3 个文件变更，已触发增量构建" },
+        { time: "10:47:36", level: "info", message: "构建完成，受管进程继续运行 · PID 18432" },
+        { time: "10:51:02", level: "info", message: "状态校准完成 · 4 个服务运行中" },
+    ];
+
+    in-out property <ServiceConfig> selected-service: {
+        id: "api-gateway",
+        name: "api-gateway",
+        runtime-kind: "windows",
+        type-label: "Windows 脚本服务",
+        origin-label: "手动创建",
+        state: "running",
+        health: "healthy",
+        detail: "PowerShell 7 · Node.js 22",
+        status-message: "健康检查正常 · HTTP 200 · 84 ms",
+        distribution: "",
+        working-directory: "D:/Projects/api-gateway",
+        shell: "PowerShell",
+        script: "$ErrorActionPreference = \"Stop\"\nSet-Location \"D:/Projects/api-gateway\"\n\ngit pull --ff-only\nnpm ci\nnpm run build\n\nnpm run start -- --port 8080",
+        environment: "NODE_ENV=development\nPORT=8080\nLOG_LEVEL=info",
+        health-check-kind: "http",
+        health-target: "http://127.0.0.1:8080/health",
+        stop-timeout: 15,
+        auto-start: true,
+        restart-policy: "失败时重启 · 最多 3 次",
+        ports: "8080",
+        pid: "18432",
+        uptime: "2 小时 14 分",
+        cpu: "1.4%",
+        memory: "128 MB",
+    };
+
+    in-out property <string> selected-service-id: "api-gateway";
+    in-out property <string> active-filter: "all";
+    in-out property <string> search-text: "";
+    in-out property <int> running-count: 4;
+    in-out property <int> issue-count: 2;
+    in-out property <int> stopped-count: 2;
+    in-out property <int> windows-count: 3;
+
+    in-out property <bool> discovery-running: false;
+    in-out property <string> discovery-summary: "2 个发行版 · 4 个容器";
+    in-out property <string> last-discovery: "今天 10:42";
+    in-out property <bool> daemon-connected: true;
+    in-out property <string> daemon-status: "守护进程已连接";
+    in-out property <string> app-version: "0.1.0";
+
+    in-out property <bool> config-dirty: false;
+    in-out property <bool> config-saving: false;
+
+    // ---------------------------------------------------------------------
+    // Integration callbacks.
+    // ---------------------------------------------------------------------
+    callback select-service(id: string);
+    callback start-service(id: string);
+    callback stop-service(id: string);
+    callback restart-service(id: string);
+    callback refresh-discovery();
+    callback save-service(config: ServiceConfig);
+    callback create-service(kind: string);
+    callback search-changed(query: string);
+    callback filter-changed(filter: string);
+    callback clear-logs();
+
+    function service-visible(state: string, matches-search: bool) -> bool {
+        if (!matches-search) {
+            return false;
+        }
+        if (root.active-filter == "running") {
+            return state == "running" || state == "degraded"
+                || state == "starting" || state == "stopping";
+        }
+        if (root.active-filter == "issues") {
+            return state == "failed" || state == "degraded"
+                || state == "unknown" || state == "missing";
+        }
+        if (root.active-filter == "stopped") {
+            return state == "stopped";
+        }
+        return true;
+    }
+
+    function select-filter(filter: string) {
+        root.active-filter = filter;
+        root.filter-changed(filter);
+    }
+
+    function select-service-row(id: string) {
+        root.selected-service-id = id;
+        root.select-service(id);
+    }
+
+    private property <bool> no-visible-services:
+        (root.active-filter == "all" && root.services.length == 0)
+        || (root.active-filter == "running" && root.running-count == 0)
+        || (root.active-filter == "issues" && root.issue-count == 0)
+        || (root.active-filter == "stopped" && root.stopped-count == 0);
+
+    VerticalLayout {
+        spacing: 0px;
+
+            // =============================================================
+            // Title bar / global search
+            // =============================================================
+            Rectangle {
+                height: 68px;
+                background: #0E141BEE;
+                border-width: 0px;
+
+                HorizontalLayout {
+                    spacing: 0px;
+
+                    Rectangle {
+                        width: 240px;
+                        height: parent.height;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 14px;
+                            spacing: 10px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 9px;
+                                background: @linear-gradient(145deg, #47B8FF 0%, #2B6FE8 58%, #6D5DF5 100%);
+                                border-width: 1px;
+                                border-color: #7DD3FC80;
+
+                                Text {
+                                    text: "S";
+                                    color: white;
+                                    font-size: 17px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: parent.width;
+                                    height: parent.height;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 0px;
+                                alignment: center;
+
+                                Text {
+                                    text: "ServerOn";
+                                    color: Theme.text;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    letter-spacing: 0.2px;
+                                }
+
+                                Text {
+                                    text: "本地服务控制台";
+                                    color: Theme.text-muted;
+                                    font-size: 9.5px;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 1px;
+                        height: 30px;
+                        background: Theme.border;
+                        vertical-stretch: 0;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: parent.height;
+
+                        HorizontalLayout {
+                            padding-left: 18px;
+                            padding-right: 18px;
+                            spacing: 16px;
+                            alignment: center;
+
+                            VerticalLayout {
+                                width: 214px;
+                                spacing: 1px;
+                                alignment: center;
+
+                                Text {
+                                    text: "服务管理器";
+                                    color: Theme.text;
+                                    font-size: 15.5px;
+                                    font-weight: 600;
+                                }
+
+                                Text {
+                                    text: "Windows、WSL 与 Docker 统一控制台";
+                                    color: Theme.text-muted;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                background: transparent;
+                            }
+
+                            LineEdit {
+                                width: 248px;
+                                height: 32px;
+                                text <=> root.search-text;
+                                placeholder-text: "搜索服务、容器或发行版";
+                                edited(query) => { root.search-changed(query); }
+                            }
+
+                            Rectangle {
+                                visible: root.width >= 1220px;
+                                width: 146px;
+                                height: 32px;
+                                border-radius: 16px;
+                                background: root.daemon-connected ? #12251F : #29161A;
+                                border-width: 1px;
+                                border-color: root.daemon-connected ? #24543F : #5A2831;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 11px;
+                                    spacing: 7px;
+                                    alignment: center;
+
+                                    StatusDot {
+                                        tone: root.daemon-connected ? Theme.success : Theme.danger;
+                                        halo: true;
+                                    }
+
+                                    Text {
+                                        text: root.daemon-status;
+                                        color: root.daemon-connected ? #8CE8BF : #FFA8B5;
+                                        font-size: 10.5px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            Button {
+                                width: 118px;
+                                height: 32px;
+                                text: root.discovery-running ? "正在发现…" : "刷新发现";
+                                primary: true;
+                                enabled: !root.discovery-running;
+                                clicked => { root.refresh-discovery(); }
+
+                                Tooltip {
+                                    text: @markdown("重新扫描 WSL 发行版、Docker Engine 与已有容器");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.border;
+                }
+            }
+
+            // =============================================================
+            // Main body: sidebar + workspace
+            // =============================================================
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 0px;
+
+                Rectangle {
+                    width: 240px;
+                    background: Theme.sidebar;
+
+                    Rectangle {
+                        x: parent.width - 1px;
+                        width: 1px;
+                        height: parent.height;
+                        background: Theme.border;
+                    }
+
+                    VerticalLayout {
+                        spacing: 0px;
+
+                        ScrollView {
+                            vertical-stretch: 1;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                            VerticalLayout {
+                                width: parent.width;
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                padding-top: 14px;
+                                padding-bottom: 12px;
+                                spacing: 2px;
+
+                                SidebarHeading {
+                                    title: "服务概览";
+                                    count-text: "";
+                                }
+
+                                NavRow {
+                                    label: "全部服务";
+                                    count: root.services.length;
+                                    glyph: "◫";
+                                    tone: Theme.info;
+                                    selected: root.active-filter == "all";
+                                    clicked => { root.select-filter("all"); }
+                                }
+
+                                NavRow {
+                                    label: "运行中";
+                                    count: root.running-count;
+                                    glyph: "▶";
+                                    tone: Theme.success;
+                                    selected: root.active-filter == "running";
+                                    clicked => { root.select-filter("running"); }
+                                }
+
+                                NavRow {
+                                    label: "需要关注";
+                                    count: root.issue-count;
+                                    glyph: "!";
+                                    tone: Theme.warning;
+                                    selected: root.active-filter == "issues";
+                                    clicked => { root.select-filter("issues"); }
+                                }
+
+                                NavRow {
+                                    label: "已停止";
+                                    count: root.stopped-count;
+                                    glyph: "■";
+                                    tone: Theme.text-muted;
+                                    selected: root.active-filter == "stopped";
+                                    clicked => { root.select-filter("stopped"); }
+                                }
+
+                                Rectangle {
+                                    height: 13px;
+                                    background: transparent;
+                                }
+
+                                SidebarHeading {
+                                    title: "WINDOWS 服务";
+                                    count-text: "· " + root.windows-count;
+                                }
+
+                                for svc in root.services : SidebarService {
+                                    visible: svc.kind == "windows";
+                                    item: svc;
+                                    selected: root.selected-service-id == svc.id;
+                                    select => { root.select-service-row(svc.id); }
+                                }
+
+                                Rectangle {
+                                    height: 13px;
+                                    background: transparent;
+                                }
+
+                                SidebarHeading {
+                                    title: "WSL 发行版";
+                                    count-text: "· " + root.distributions.length;
+                                }
+
+                                for distro in root.distributions : VerticalLayout {
+                                    spacing: 1px;
+
+                                    Rectangle {
+                                        height: 30px;
+                                        border-radius: 6px;
+
+                                        HorizontalLayout {
+                                            padding-left: 9px;
+                                            padding-right: 8px;
+                                            spacing: 7px;
+                                            alignment: center;
+
+                                            Rectangle {
+                                                width: 16px;
+                                                height: 16px;
+                                                border-radius: 4px;
+                                                background: Theme.violet.with-alpha(0.10);
+
+                                                Text {
+                                                    text: ">_";
+                                                    color: Theme.violet;
+                                                    font-size: 7.5px;
+                                                    font-weight: 600;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                    width: parent.width;
+                                                    height: parent.height;
+                                                }
+                                            }
+
+                                            Text {
+                                                text: distro.name;
+                                                color: Theme.text-secondary;
+                                                font-size: 11.5px;
+                                                font-weight: 500;
+                                                horizontal-stretch: 1;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: distro.version;
+                                                color: Theme.text-muted;
+                                                font-size: 9px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            StatusDot {
+                                                tone: Ui.state-tone(distro.state);
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        height: 22px;
+
+                                        HorizontalLayout {
+                                            padding-left: 34px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+                                            alignment: center;
+
+                                            Rectangle {
+                                                width: 4px;
+                                                height: 4px;
+                                                border-radius: 2px;
+                                                background: Ui.engine-tone(distro.engine-state);
+                                            }
+
+                                            Text {
+                                                text: distro.engine-label;
+                                                color: Theme.text-muted;
+                                                font-size: 9.5px;
+                                                horizontal-stretch: 1;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: "" + distro.container-count;
+                                                color: Theme.text-muted;
+                                                font-size: 9px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    for svc in root.services : SidebarService {
+                                        visible: svc.distribution == distro.name
+                                            && (svc.kind == "wsl" || svc.kind == "container");
+                                        item: svc;
+                                        indent: 18px;
+                                        selected: root.selected-service-id == svc.id;
+                                        select => { root.select-service-row(svc.id); }
+                                    }
+
+                                    Rectangle {
+                                        height: 10px;
+                                        background: transparent;
+                                    }
+                                }
+
+                                if root.distributions.length == 0 : Rectangle {
+                                    height: 42px;
+                                    Text {
+                                        text: "未发现 WSL 发行版";
+                                        color: Theme.text-muted;
+                                        font-size: 10.5px;
+                                        vertical-alignment: center;
+                                        x: 10px;
+                                        width: parent.width - 10px;
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 108px;
+                            background: transparent;
+
+                            HorizontalLayout {
+                                padding: 10px;
+
+                                Rectangle {
+                                    border-radius: 9px;
+                                    background: @linear-gradient(145deg, #15222C 0%, #101820 100%);
+                                    border-width: 1px;
+                                    border-color: #25323F;
+
+                                    VerticalLayout {
+                                        padding-left: 11px;
+                                        padding-right: 10px;
+                                        padding-top: 9px;
+                                        padding-bottom: 8px;
+                                        spacing: 4px;
+
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: center;
+
+                                            Text {
+                                                text: "自动发现";
+                                                color: Theme.text-secondary;
+                                                font-size: 10.5px;
+                                                font-weight: 600;
+                                                horizontal-stretch: 1;
+                                            }
+
+                                            StatusDot {
+                                                tone: root.discovery-running ? Theme.info : Theme.success;
+                                                halo: true;
+                                            }
+
+                                            Text {
+                                                text: root.discovery-running ? "扫描中" : "已启用";
+                                                color: root.discovery-running ? Theme.info : Theme.success;
+                                                font-size: 9.5px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.discovery-summary;
+                                            color: Theme.text-muted;
+                                            font-size: 9.5px;
+                                            overflow: elide;
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: center;
+
+                                            Text {
+                                                text: "上次扫描 · " + root.last-discovery;
+                                                color: Theme.text-muted;
+                                                font-size: 9px;
+                                                horizontal-stretch: 1;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            IconAction {
+                                                glyph: "⟳";
+                                                tooltip: "重新扫描 WSL 与 Docker";
+                                                tone: Theme.accent;
+                                                available: !root.discovery-running;
+                                                clicked => { root.refresh-discovery(); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: transparent;
+
+                    VerticalLayout {
+                        padding-left: 18px;
+                        padding-right: 18px;
+                        padding-top: 15px;
+                        padding-bottom: 14px;
+                        spacing: 13px;
+
+                        // Page heading and filters
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: center;
+
+                            VerticalLayout {
+                                spacing: 2px;
+
+                                Text {
+                                    text: Ui.filter-title(root.active-filter);
+                                    color: Theme.text;
+                                    font-size: 20px;
+                                    font-weight: 600;
+                                    letter-spacing: 0.1px;
+                                }
+
+                                Text {
+                                    text: "共 " + root.services.length + " 个服务  ·  "
+                                        + root.running-count + " 个运行中  ·  "
+                                        + root.issue-count + " 个需要关注";
+                                    color: Theme.text-muted;
+                                    font-size: 10.5px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                background: transparent;
+                            }
+
+                            FilterChip {
+                                label: "全部  " + root.services.length;
+                                active: root.active-filter == "all";
+                                clicked => { root.select-filter("all"); }
+                            }
+
+                            FilterChip {
+                                label: "运行中  " + root.running-count;
+                                active: root.active-filter == "running";
+                                clicked => { root.select-filter("running"); }
+                            }
+
+                            FilterChip {
+                                label: "异常  " + root.issue-count;
+                                active: root.active-filter == "issues";
+                                clicked => { root.select-filter("issues"); }
+                            }
+
+                            FilterChip {
+                                label: "已停止  " + root.stopped-count;
+                                active: root.active-filter == "stopped";
+                                clicked => { root.select-filter("stopped"); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            vertical-stretch: 1;
+                            spacing: 13px;
+
+                            // =================================================
+                            // Left: service list + configuration editor
+                            // =================================================
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                min-width: 420px;
+                                spacing: 13px;
+
+                                // Service list panel
+                                Rectangle {
+                                    vertical-stretch: 2;
+                                    min-height: 218px;
+                                    border-radius: 10px;
+                                    background: Theme.panel;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    clip: true;
+
+                                    VerticalLayout {
+                                        spacing: 0px;
+
+                                        Rectangle {
+                                            height: 44px;
+                                            background: transparent;
+
+                                            HorizontalLayout {
+                                                padding-left: 14px;
+                                                padding-right: 12px;
+                                                spacing: 8px;
+                                                alignment: center;
+
+                                                Text {
+                                                    text: "服务列表";
+                                                    color: Theme.text;
+                                                    font-size: 12.5px;
+                                                    font-weight: 600;
+                                                }
+
+                                                Text {
+                                                    text: "选择服务以查看配置与日志";
+                                                    color: Theme.text-muted;
+                                                    font-size: 10px;
+                                                    horizontal-stretch: 1;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                }
+
+                                                Text {
+                                                    text: "" + root.services.length + " 项";
+                                                    color: Theme.text-muted;
+                                                    font-size: 9.5px;
+                                                    vertical-alignment: center;
+                                                }
+
+                                                Button {
+                                                    width: 86px;
+                                                    height: 26px;
+                                                    text: "新建 Windows";
+                                                    clicked => { root.create-service("windows"); }
+                                                }
+
+                                                Button {
+                                                    width: 70px;
+                                                    height: 26px;
+                                                    text: "新建 WSL";
+                                                    clicked => { root.create-service("wsl"); }
+                                                }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 1px;
+                                            background: Theme.border-soft;
+                                        }
+
+                                        ScrollView {
+                                            vertical-stretch: 1;
+                                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                                            VerticalLayout {
+                                                width: parent.width;
+                                                padding: 6px;
+                                                spacing: 2px;
+
+                                                for svc in root.services : ServiceRow {
+                                                    visible: root.service-visible(svc.state, svc.matches-search);
+                                                    item: svc;
+                                                    selected: root.selected-service-id == svc.id;
+                                                    select => { root.select-service-row(svc.id); }
+                                                    start => { root.start-service(svc.id); }
+                                                    stop => { root.stop-service(svc.id); }
+                                                    restart => { root.restart-service(svc.id); }
+                                                }
+
+                                                if root.no-visible-services : Rectangle {
+                                                    height: 116px;
+                                                    background: transparent;
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 5px;
+
+                                                        Text {
+                                                            text: "没有符合条件的服务";
+                                                            color: Theme.text-secondary;
+                                                            font-size: 12px;
+                                                            horizontal-alignment: center;
+                                                        }
+
+                                                        Text {
+                                                            text: "尝试切换筛选条件，或刷新自动发现。";
+                                                            color: Theme.text-muted;
+                                                            font-size: 10px;
+                                                            horizontal-alignment: center;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Configuration panel
+                                Rectangle {
+                                    vertical-stretch: 3;
+                                    min-height: 288px;
+                                    border-radius: 10px;
+                                    background: Theme.panel;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    clip: true;
+
+                                    VerticalLayout {
+                                        spacing: 0px;
+
+                                        Rectangle {
+                                            height: 50px;
+                                            background: transparent;
+
+                                            HorizontalLayout {
+                                                padding-left: 14px;
+                                                padding-right: 12px;
+                                                spacing: 9px;
+                                                alignment: center;
+
+                                                Rectangle {
+                                                    width: 26px;
+                                                    height: 26px;
+                                                    border-radius: 7px;
+                                                    background: Theme.accent.with-alpha(0.10);
+
+                                                    Text {
+                                                        text: "{ }";
+                                                        color: Theme.accent;
+                                                        font-size: 9px;
+                                                        font-weight: 600;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                        width: parent.width;
+                                                        height: parent.height;
+                                                    }
+                                                }
+
+                                                VerticalLayout {
+                                                    spacing: 0px;
+                                                    horizontal-stretch: 1;
+                                                    alignment: center;
+
+                                                    Text {
+                                                        text: "服务配置";
+                                                        color: Theme.text;
+                                                        font-size: 12.5px;
+                                                        font-weight: 600;
+                                                        overflow: elide;
+                                                    }
+
+                                                    Text {
+                                                        text: root.selected-service.id == ""
+                                                            ? "未选择服务"
+                                                            : root.selected-service.type-label + " · "
+                                                                + root.selected-service.origin-label;
+                                                        color: Theme.text-muted;
+                                                        font-size: 9.5px;
+                                                        overflow: elide;
+                                                    }
+                                                }
+
+                                                if root.config-dirty : Rectangle {
+                                                    height: 20px;
+                                                    border-radius: 10px;
+                                                    background: Theme.warning.with-alpha(0.10);
+                                                    border-width: 1px;
+                                                    border-color: Theme.warning.with-alpha(0.22);
+                                                    horizontal-stretch: 0;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 8px;
+                                                        padding-right: 8px;
+
+                                                        Text {
+                                                            text: "未保存";
+                                                            color: Theme.warning;
+                                                            font-size: 9.5px;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
+
+                                                Button {
+                                                    width: 94px;
+                                                    height: 30px;
+                                                    text: root.config-saving ? "保存中…" : "保存更改";
+                                                    primary: true;
+                                                    enabled: root.selected-service.id != ""
+                                                        && root.selected-service.runtime-kind != "container"
+                                                        && !root.config-saving;
+                                                    clicked => {
+                                                        root.config-saving = true;
+                                                        root.save-service(root.selected-service);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 1px;
+                                            background: Theme.border-soft;
+                                        }
+
+                                        ScrollView {
+                                            vertical-stretch: 1;
+                                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                                            VerticalLayout {
+                                                width: parent.width;
+                                                padding-left: 14px;
+                                                padding-right: 14px;
+                                                padding-top: 11px;
+                                                padding-bottom: 12px;
+                                                spacing: 10px;
+
+                                                if root.selected-service.runtime-kind == "container" : VerticalLayout {
+                                                    spacing: 10px;
+
+                                                    Rectangle {
+                                                        height: 48px;
+                                                        border-radius: 7px;
+                                                        background: Theme.teal.with-alpha(0.07);
+                                                        border-width: 1px;
+                                                        border-color: Theme.teal.with-alpha(0.17);
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 10px;
+                                                            spacing: 8px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: "▣";
+                                                                color: Theme.teal;
+                                                                font-size: 14px;
+                                                                vertical-alignment: center;
+                                                            }
+
+                                                            Text {
+                                                                text: "Docker 容器由 Engine 管理，启动、停止与重启会直接作用于现有容器。";
+                                                                color: Theme.text-secondary;
+                                                                font-size: 10px;
+                                                                wrap: word-wrap;
+                                                                horizontal-stretch: 1;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    HorizontalLayout {
+                                                        spacing: 18px;
+
+                                                        ReadOnlyField {
+                                                            label: "容器名称";
+                                                            value: root.selected-service.name;
+                                                            horizontal-stretch: 1;
+                                                        }
+
+                                                        ReadOnlyField {
+                                                            label: "WSL 发行版";
+                                                            value: root.selected-service.distribution == ""
+                                                                ? "—" : root.selected-service.distribution;
+                                                            horizontal-stretch: 1;
+                                                        }
+                                                    }
+
+                                                    HorizontalLayout {
+                                                        spacing: 18px;
+
+                                                        ReadOnlyField {
+                                                            label: "镜像与端口";
+                                                            value: root.selected-service.detail + " · "
+                                                                + root.selected-service.ports;
+                                                            horizontal-stretch: 1;
+                                                        }
+
+                                                        ReadOnlyField {
+                                                            label: "容器状态";
+                                                            value: Ui.state-label(root.selected-service.state)
+                                                                + " · " + root.selected-service.uptime;
+                                                            horizontal-stretch: 1;
+                                                        }
+                                                    }
+
+                                                    Rectangle {
+                                                        height: 1px;
+                                                        background: Theme.border-soft;
+                                                    }
+
+                                                    Text {
+                                                        text: "镜像、端口、挂载或环境变量的修改需要重建容器。ServerOn 不会擅自重建或删除容器，相关操作请在 Docker 工作流中完成。";
+                                                        color: Theme.text-muted;
+                                                        font-size: 10px;
+                                                        wrap: word-wrap;
+                                                        max-lines: 3;
+                                                    }
+                                                }
+
+                                                if root.selected-service.runtime-kind != "container" : VerticalLayout {
+                                                    spacing: 10px;
+
+                                                    HorizontalLayout {
+                                                        spacing: 10px;
+
+                                                        VerticalLayout {
+                                                            horizontal-stretch: 1;
+                                                            spacing: 3px;
+
+                                                            Text {
+                                                                text: "服务名称";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                            }
+
+                                                            LineEdit {
+                                                                height: 32px;
+                                                                text <=> root.selected-service.name;
+                                                                placeholder-text: "例如 api-gateway";
+                                                                edited(value) => { root.config-dirty = true; }
+                                                            }
+                                                        }
+
+                                                        VerticalLayout {
+                                                            width: 192px;
+                                                            spacing: 3px;
+
+                                                            Text {
+                                                                text: root.selected-service.runtime-kind == "wsl"
+                                                                    ? "WSL 发行版 / Shell" : "运行 Shell";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                            }
+
+                                                            if root.selected-service.runtime-kind == "windows" : Rectangle {
+                                                                height: 32px;
+                                                                border-radius: 7px;
+                                                                background: Theme.surface;
+                                                                border-width: 1px;
+                                                                border-color: Theme.border-soft;
+
+                                                                HorizontalLayout {
+                                                                    padding: 2px;
+                                                                    spacing: 2px;
+
+                                                                    SegmentButton {
+                                                                        label: "PowerShell";
+                                                                        active: root.selected-service.shell == "PowerShell";
+                                                                        clicked => {
+                                                                            root.selected-service.shell = "PowerShell";
+                                                                            root.config-dirty = true;
+                                                                        }
+                                                                    }
+
+                                                                    SegmentButton {
+                                                                        label: "CMD";
+                                                                        active: root.selected-service.shell == "CMD";
+                                                                        clicked => {
+                                                                            root.selected-service.shell = "CMD";
+                                                                            root.config-dirty = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            if root.selected-service.runtime-kind == "wsl" : Rectangle {
+                                                                height: 32px;
+                                                                border-radius: 7px;
+                                                                background: Theme.surface;
+                                                                border-width: 1px;
+                                                                border-color: Theme.border-soft;
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 10px;
+                                                                    spacing: 6px;
+                                                                    alignment: center;
+
+                                                                    Text {
+                                                                        text: root.selected-service.distribution == ""
+                                                                            ? "Ubuntu" : root.selected-service.distribution;
+                                                                        color: Theme.text;
+                                                                        font-size: 11px;
+                                                                        horizontal-stretch: 1;
+                                                                        vertical-alignment: center;
+                                                                        overflow: elide;
+                                                                    }
+
+                                                                    Pill {
+                                                                        text: "Bash";
+                                                                        tone: Theme.violet;
+                                                                        dot: false;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        spacing: 3px;
+
+                                                        Text {
+                                                            text: "工作目录";
+                                                            color: Theme.text-muted;
+                                                            font-size: 9.5px;
+                                                            font-weight: 500;
+                                                        }
+
+                                                        LineEdit {
+                                                            height: 32px;
+                                                            text <=> root.selected-service.working-directory;
+                                                            placeholder-text: root.selected-service.runtime-kind == "wsl"
+                                                                ? "例如 /home/dev/project" : "例如 D:/Projects/project";
+                                                            edited(value) => { root.config-dirty = true; }
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        spacing: 3px;
+
+                                                        HorizontalLayout {
+                                                            spacing: 6px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: "启动脚本";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                                horizontal-stretch: 1;
+                                                            }
+
+                                                            Text {
+                                                                text: "保持前台运行 · 失败即中止";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9px;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        TextEdit {
+                                                            height: 106px;
+                                                            text <=> root.selected-service.script;
+                                                            placeholder-text: "在此编写更新、安装依赖、编译与启动命令…";
+                                                            font-family: Theme.mono-font;
+                                                            font-size: 10.5px;
+                                                            wrap: no-wrap;
+                                                            edited(value) => { root.config-dirty = true; }
+                                                        }
+                                                    }
+
+                                                    HorizontalLayout {
+                                                        spacing: 10px;
+
+                                                        VerticalLayout {
+                                                            spacing: 3px;
+
+                                                            Text {
+                                                                text: "健康检查";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                            }
+
+                                                            Rectangle {
+                                                                height: 32px;
+                                                                border-radius: 7px;
+                                                                background: Theme.surface;
+                                                                border-width: 1px;
+                                                                border-color: Theme.border-soft;
+
+                                                                HorizontalLayout {
+                                                                    padding: 2px;
+                                                                    spacing: 2px;
+
+                                                                    SegmentButton {
+                                                                        label: "不检查";
+                                                                        active: root.selected-service.health-check-kind == "none";
+                                                                        clicked => {
+                                                                            root.selected-service.health-check-kind = "none";
+                                                                            root.config-dirty = true;
+                                                                        }
+                                                                    }
+
+                                                                    SegmentButton {
+                                                                        label: "HTTP";
+                                                                        active: root.selected-service.health-check-kind == "http";
+                                                                        clicked => {
+                                                                            root.selected-service.health-check-kind = "http";
+                                                                            root.config-dirty = true;
+                                                                        }
+                                                                    }
+
+                                                                    SegmentButton {
+                                                                        label: "TCP";
+                                                                        active: root.selected-service.health-check-kind == "tcp";
+                                                                        clicked => {
+                                                                            root.selected-service.health-check-kind = "tcp";
+                                                                            root.config-dirty = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        VerticalLayout {
+                                                            horizontal-stretch: 1;
+                                                            spacing: 3px;
+
+                                                            Text {
+                                                                text: "健康检查目标";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                            }
+
+                                                            LineEdit {
+                                                                height: 32px;
+                                                                text <=> root.selected-service.health-target;
+                                                                enabled: root.selected-service.health-check-kind != "none";
+                                                                placeholder-text: "http://127.0.0.1:8080/health 或 host:port";
+                                                                edited(value) => { root.config-dirty = true; }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    HorizontalLayout {
+                                                        spacing: 10px;
+
+                                                        VerticalLayout {
+                                                            width: 146px;
+                                                            spacing: 3px;
+
+                                                            Text {
+                                                                text: "停止超时（秒）";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                            }
+
+                                                            SpinBox {
+                                                                height: 32px;
+                                                                minimum: 1;
+                                                                maximum: 600;
+                                                                value <=> root.selected-service.stop-timeout;
+                                                                edited(value) => { root.config-dirty = true; }
+                                                            }
+                                                        }
+
+                                                        VerticalLayout {
+                                                            horizontal-stretch: 1;
+                                                            spacing: 3px;
+
+                                                            Text {
+                                                                text: "自动启动";
+                                                                color: Theme.text-muted;
+                                                                font-size: 9.5px;
+                                                                font-weight: 500;
+                                                            }
+
+                                                            Rectangle {
+                                                                height: 32px;
+
+                                                                HorizontalLayout {
+                                                                    spacing: 8px;
+                                                                    alignment: center;
+
+                                                                    Switch {
+                                                                        checked <=> root.selected-service.auto-start;
+                                                                        toggled => { root.config-dirty = true; }
+                                                                    }
+
+                                                                    Text {
+                                                                        text: "守护进程启动时自动拉起此服务";
+                                                                        color: Theme.text-muted;
+                                                                        font-size: 9.5px;
+                                                                        vertical-alignment: center;
+                                                                        horizontal-stretch: 1;
+                                                                        overflow: elide;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        spacing: 3px;
+
+                                                        Text {
+                                                            text: "环境变量";
+                                                            color: Theme.text-muted;
+                                                            font-size: 9.5px;
+                                                            font-weight: 500;
+                                                        }
+
+                                                        TextEdit {
+                                                            height: 54px;
+                                                            text <=> root.selected-service.environment;
+                                                            placeholder-text: "KEY=VALUE，每行一个";
+                                                            font-family: Theme.mono-font;
+                                                            font-size: 10.5px;
+                                                            wrap: no-wrap;
+                                                            edited(value) => { root.config-dirty = true; }
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: "脚本会在受管进程树中执行；请勿使用 nohup、disown 或将服务自行转入后台。保存后由守护进程校验并应用配置。";
+                                                        color: Theme.text-muted;
+                                                        font-size: 9.5px;
+                                                        wrap: word-wrap;
+                                                        max-lines: 2;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // =================================================
+                            // Right: selected service + live logs
+                            // =================================================
+                            VerticalLayout {
+                                width: 344px;
+                                spacing: 13px;
+
+                                // Selected service summary
+                                Rectangle {
+                                    height: 196px;
+                                    border-radius: 10px;
+                                    background: @linear-gradient(145deg, #141D27 0%, #111821 100%);
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    VerticalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        padding-top: 12px;
+                                        padding-bottom: 11px;
+                                        spacing: 8px;
+
+                                        HorizontalLayout {
+                                            spacing: 9px;
+                                            alignment: center;
+
+                                            Rectangle {
+                                                width: 38px;
+                                                height: 38px;
+                                                border-radius: 10px;
+                                                background: Ui.kind-tone(root.selected-service.runtime-kind).with-alpha(0.12);
+                                                border-width: 1px;
+                                                border-color: Ui.kind-tone(root.selected-service.runtime-kind).with-alpha(0.22);
+                                                vertical-stretch: 0;
+
+                                                Text {
+                                                    text: Ui.kind-glyph(root.selected-service.runtime-kind);
+                                                    color: Ui.kind-tone(root.selected-service.runtime-kind);
+                                                    font-size: root.selected-service.runtime-kind == "container" ? 16px : 12px;
+                                                    font-weight: 600;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                    width: parent.width;
+                                                    height: parent.height;
+                                                }
+                                            }
+
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                spacing: 1px;
+                                                alignment: center;
+
+                                                Text {
+                                                    text: root.selected-service.id == ""
+                                                        ? "未选择服务" : root.selected-service.name;
+                                                    color: Theme.text;
+                                                    font-size: 13.5px;
+                                                    font-weight: 600;
+                                                    overflow: elide;
+                                                }
+
+                                                Text {
+                                                    text: root.selected-service.detail;
+                                                    color: Theme.text-muted;
+                                                    font-size: 9.5px;
+                                                    overflow: elide;
+                                                }
+                                            }
+
+                                            Pill {
+                                                text: Ui.state-label(root.selected-service.state);
+                                                tone: Ui.state-tone(root.selected-service.state);
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: center;
+
+                                            HealthLabel {
+                                                health: root.selected-service.health;
+                                            }
+
+                                            Text {
+                                                text: "·";
+                                                color: Theme.text-muted;
+                                                font-size: 10px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: root.selected-service.status-message;
+                                                color: Theme.text-secondary;
+                                                font-size: 9.5px;
+                                                horizontal-stretch: 1;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 1px;
+                                            background: Theme.border-soft;
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 12px;
+
+                                            SummaryStat {
+                                                label: "运行时长";
+                                                value: root.selected-service.uptime;
+                                                horizontal-stretch: 1;
+                                            }
+
+                                            SummaryStat {
+                                                label: "端口";
+                                                value: root.selected-service.ports == ""
+                                                    ? "—" : root.selected-service.ports;
+                                                horizontal-stretch: 1;
+                                            }
+
+                                            SummaryStat {
+                                                label: "资源占用";
+                                                value: root.selected-service.cpu + " · " + root.selected-service.memory;
+                                                horizontal-stretch: 1;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 5px;
+
+                                            QuickAction {
+                                                label: "启动";
+                                                glyph: "▶";
+                                                tone: Theme.success;
+                                                available: root.selected-service.state == "stopped"
+                                                    || root.selected-service.state == "failed";
+                                                clicked => { root.start-service(root.selected-service.id); }
+                                            }
+
+                                            QuickAction {
+                                                label: "停止";
+                                                glyph: "■";
+                                                tone: Theme.text-secondary;
+                                                available: root.selected-service.state == "running"
+                                                    || root.selected-service.state == "degraded";
+                                                clicked => { root.stop-service(root.selected-service.id); }
+                                            }
+
+                                            QuickAction {
+                                                label: "重启";
+                                                glyph: "↻";
+                                                tone: Theme.accent;
+                                                available: root.selected-service.state == "running"
+                                                    || root.selected-service.state == "degraded"
+                                                    || root.selected-service.state == "failed";
+                                                clicked => { root.restart-service(root.selected-service.id); }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Log panel
+                                Rectangle {
+                                    vertical-stretch: 1;
+                                    min-height: 250px;
+                                    border-radius: 10px;
+                                    background: #0D131A;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    clip: true;
+
+                                    VerticalLayout {
+                                        spacing: 0px;
+
+                                        Rectangle {
+                                            height: 48px;
+                                            background: transparent;
+
+                                            HorizontalLayout {
+                                                padding-left: 14px;
+                                                padding-right: 8px;
+                                                spacing: 8px;
+                                                alignment: center;
+
+                                                VerticalLayout {
+                                                    spacing: 0px;
+                                                    horizontal-stretch: 1;
+                                                    alignment: center;
+
+                                                    HorizontalLayout {
+                                                        spacing: 7px;
+                                                        alignment: center;
+
+                                                        Text {
+                                                            text: "运行日志";
+                                                            color: Theme.text;
+                                                            font-size: 12.5px;
+                                                            font-weight: 600;
+                                                        }
+
+                                                        if root.daemon-connected : Pill {
+                                                            text: "实时";
+                                                            tone: Theme.success;
+                                                            dot: true;
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: root.selected-service.id == ""
+                                                            ? "等待选择服务"
+                                                            : root.selected-service.name + " · "
+                                                                + root.selected-service.type-label;
+                                                        color: Theme.text-muted;
+                                                        font-size: 9.5px;
+                                                        overflow: elide;
+                                                    }
+                                                }
+
+                                                IconAction {
+                                                    glyph: "⌫";
+                                                    tooltip: "清空当前日志视图";
+                                                    tone: Theme.text-muted;
+                                                    clicked => { root.clear-logs(); }
+                                                }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 1px;
+                                            background: Theme.border-soft;
+                                        }
+
+                                        ScrollView {
+                                            vertical-stretch: 1;
+                                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                                            VerticalLayout {
+                                                width: parent.width;
+                                                padding-left: 11px;
+                                                padding-right: 11px;
+                                                padding-top: 8px;
+                                                padding-bottom: 8px;
+                                                spacing: 4px;
+
+                                                for line in root.logs : HorizontalLayout {
+                                                    spacing: 7px;
+                                                    alignment: start;
+
+                                                    Text {
+                                                        text: line.time;
+                                                        color: #4F5D6E;
+                                                        font-family: Theme.mono-font;
+                                                        font-size: 9.5px;
+                                                        width: 50px;
+                                                        vertical-alignment: top;
+                                                    }
+
+                                                    Text {
+                                                        text: Ui.log-label(line.level);
+                                                        color: Ui.log-tone(line.level);
+                                                        font-size: 9px;
+                                                        font-weight: 600;
+                                                        width: 24px;
+                                                        vertical-alignment: top;
+                                                    }
+
+                                                    Text {
+                                                        text: line.message;
+                                                        color: Ui.log-message-tone(line.level);
+                                                        font-family: Theme.mono-font;
+                                                        font-size: 10px;
+                                                        horizontal-stretch: 1;
+                                                        wrap: word-wrap;
+                                                        vertical-alignment: top;
+                                                    }
+                                                }
+
+                                                if root.logs.length == 0 : VerticalLayout {
+                                                    min-height: 150px;
+                                                    alignment: center;
+                                                    spacing: 6px;
+
+                                                    Text {
+                                                        text: "暂无日志";
+                                                        color: Theme.text-secondary;
+                                                        font-size: 11px;
+                                                        horizontal-alignment: center;
+                                                    }
+
+                                                    Text {
+                                                        text: "启动服务后，实时输出将显示在这里。";
+                                                        color: Theme.text-muted;
+                                                        font-size: 9.5px;
+                                                        horizontal-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 1px;
+                                            background: Theme.border-soft;
+                                        }
+
+                                        Rectangle {
+                                            height: 30px;
+                                            background: transparent;
+
+                                            HorizontalLayout {
+                                                padding-left: 11px;
+                                                padding-right: 11px;
+                                                spacing: 6px;
+                                                alignment: center;
+
+                                                CheckBox {
+                                                    checked: true;
+                                                    enabled: false;
+                                                    text: "跟随输出";
+                                                    font-size: 9.5px;
+                                                }
+
+                                                Rectangle {
+                                                    horizontal-stretch: 1;
+                                                    background: transparent;
+                                                }
+
+                                                Text {
+                                                    text: "守护进程按需推送 · 内存缓存有界";
+                                                    color: Theme.text-muted;
+                                                    font-size: 8.5px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =============================================================
+            // Status bar
+            // =============================================================
+            Rectangle {
+                height: 26px;
+                background: Theme.bg-deep;
+                border-width: 0px;
+
+                Rectangle {
+                    y: 0px;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.border-soft;
+                }
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    alignment: center;
+
+                    StatusDot {
+                        tone: root.daemon-connected ? Theme.success : Theme.danger;
+                    }
+
+                    Text {
+                        text: root.daemon-connected ? "本地 Named Pipe 已连接" : "守护进程未连接";
+                        color: Theme.text-muted;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "·";
+                        color: Theme.border-strong;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.discovery-running
+                            ? "正在扫描 WSL 与 Docker…"
+                            : "上次发现 " + root.last-discovery;
+                        color: Theme.text-muted;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: transparent;
+                    }
+
+                    Text {
+                        text: "关闭窗口不会停止服务";
+                        color: Theme.text-muted;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "·";
+                        color: Theme.border-strong;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "ServerOn v" + root.app-version;
+                        color: Theme.text-muted;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+}
