@@ -32,40 +32,15 @@ component AppIcon inherits Rectangle {
             root.name == "restart" || root.name == "refresh" ? "M 14 8 A 6 6 0 1 1 12.24 3.76 L 14 5.33 M 14 2 L 14 5.33 L 10.67 5.33" :
             root.name == "sun" ? "M 11 8 A 3 3 0 1 1 10.99 8 M 8 1 L 8 3 M 8 13 L 8 15 M 1 8 L 3 8 M 13 8 L 15 8 M 3 3 L 4.4 4.4 M 11.6 11.6 L 13 13 M 3 13 L 4.4 11.6 M 11.6 4.4 L 13 3" :
             root.name == "moon" ? "M 12.5 11.5 A 6 6 0 0 1 4.5 3.5 A 6.5 6.5 0 1 0 12.5 11.5 Z" :
+            root.name == "search" ? "M 7.5 2.5 A 5 5 0 1 0 7.5 12.5 A 5 5 0 1 0 7.5 2.5 M 11 11 L 14.5 14.5" :
+            root.name == "cpu" ? "M 5 5 L 11 5 L 11 11 L 5 11 Z M 7 1 L 7 3 M 9 1 L 9 3 M 7 13 L 7 15 M 9 13 L 9 15 M 1 7 L 3 7 M 1 9 L 3 9 M 13 7 L 15 7 M 13 9 L 15 9 M 3 3 L 13 3 L 13 13 L 3 13 Z" :
+            root.name == "memory" ? "M 3 4 L 13 4 L 13 12 L 3 12 Z M 5 6 L 5 10 M 8 6 L 8 10 M 11 6 L 11 10 M 2 6 L 3 6 M 2 10 L 3 10 M 13 6 L 14 6 M 13 10 L 14 10" :
+            root.name == "branch" ? "M 4 2.5 A 1.5 1.5 0 1 0 4 5.5 A 1.5 1.5 0 1 0 4 2.5 M 12 10.5 A 1.5 1.5 0 1 0 12 13.5 A 1.5 1.5 0 1 0 12 10.5 M 4 5.5 L 4 10.5 M 4 10.5 A 3.5 3.5 0 0 0 7.5 7 L 12 7 M 12 2.5 A 1.5 1.5 0 1 0 12 5.5 A 1.5 1.5 0 1 0 12 2.5 M 12 7 L 12 5.5" :
             root.name == "close" ? "M 4 4 L 12 12 M 12 4 L 4 12" :
             "M 2.5 2.5 L 6.5 2.5 L 6.5 6.5 L 2.5 6.5 Z M 9.5 2.5 L 13.5 2.5 L 13.5 6.5 L 9.5 6.5 Z M 2.5 9.5 L 6.5 9.5 L 6.5 13.5 L 2.5 13.5 Z M 9.5 9.5 L 13.5 9.5 L 13.5 13.5 L 9.5 13.5 Z";
         fill: root.filled ? root.tone : transparent;
         stroke: root.filled ? transparent : root.tone;
         stroke-width: root.name == "grid" ? 1.3px : 1.6px;
-    }
-}
-
-component Pill inherits Rectangle {
-    in property <string> label: "";
-    in property <color> tone: Theme.text-secondary;
-    in property <length> max-label-width: 160px;
-    height: 24px;
-    border-radius: 12px;
-    background: root.tone.with-alpha(0.10);
-    border-width: 1px;
-    border-color: root.tone.with-alpha(0.20);
-    horizontal-stretch: 0;
-    HorizontalLayout {
-        padding-left: 9px;
-        padding-right: 9px;
-        spacing: 6px;
-        alignment: center;
-        cross-axis-alignment: center;
-        Rectangle { width: 5px; height: 5px; border-radius: 2.5px; background: root.tone; }
-        Text {
-            text: root.label;
-            color: root.tone;
-            font-size: Theme.font-xs;
-            vertical-alignment: center;
-            min-width: 0px;
-            max-width: root.max-label-width;
-            overflow: elide;
-        }
     }
 }
 
@@ -179,7 +154,7 @@ component NavItem inherits Rectangle {
             text: root.label;
             color: root.selected ? Theme.text : Theme.text-secondary;
             font-size: Theme.font-sm;
-            font-weight: root.selected ? 600 : 400;
+            font-weight: root.selected ? 500 : 400;
             horizontal-stretch: 1;
             min-width: 0px;
             overflow: elide;
@@ -222,15 +197,16 @@ component NavItem inherits Rectangle {
 component SegmentButton inherits Rectangle {
     in property <string> label: "";
     in property <bool> selected: false;
+    in property <bool> underline: false;
     in property <length> button-width: 64px;
     out property <bool> has-focus: focus.has-focus;
     callback clicked;
     width: root.button-width;
-    height: 30px;
-    border-radius: Theme.radius-sm;
-    background: root.selected ? Theme.panel-raised : transparent;
-    border-width: 1px;
-    border-color: root.selected ? Theme.border-strong : transparent;
+    height: root.underline ? 38px : 30px;
+    border-radius: root.underline ? 0px : Theme.radius-sm;
+    background: !root.underline && root.selected ? Theme.panel-raised : transparent;
+    border-width: root.underline ? 0px : 1px;
+    border-color: !root.underline && root.selected ? Theme.border-strong : transparent;
     forward-focus: focus;
     accessible-role: button;
     accessible-checkable: true;
@@ -243,7 +219,7 @@ component SegmentButton inherits Rectangle {
         text: root.label;
         color: root.selected ? Theme.text : Theme.text-muted;
         font-size: Theme.font-sm;
-        font-weight: root.selected ? 600 : 400;
+        font-weight: root.selected ? 500 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
         width: parent.width;
@@ -253,9 +229,9 @@ component SegmentButton inherits Rectangle {
     }
     Rectangle {
         visible: root.selected;
-        x: (parent.width - 18px) / 2;
-        y: parent.height - 3px;
-        width: 18px;
+        x: root.underline ? 0px : (parent.width - 18px) / 2;
+        y: parent.height - 2px;
+        width: root.underline ? parent.width : 18px;
         height: 2px;
         border-radius: 1px;
         background: Theme.accent;
@@ -383,117 +359,34 @@ component EmptyState inherits VerticalLayout {
     }
 }
 
-component KpiCard inherits Rectangle {
-    in property <string> label: "";
-    in property <string> value: "0";
-    in property <string> glyph: "grid";
-    in property <color> tone: Theme.accent;
-    in property <bool> selected: false;
-    out property <bool> has-focus: focus.has-focus;
-    callback clicked;
-    height: 82px;
-    min-width: 0px;
-    horizontal-stretch: 1;
-    border-radius: Theme.radius-md;
-    background: root.selected ? root.tone.with-alpha(0.10) : Theme.panel;
-    border-width: 1px;
-    border-color: root.selected ? root.tone.with-alpha(0.42) : Theme.border-soft;
-    forward-focus: focus;
-    accessible-role: button;
-    accessible-checkable: true;
-    accessible-checked: root.selected;
-    accessible-label: root.label + " " + root.value;
-    accessible-action-default => { root.clicked(); }
-    animate background, border-color { duration: 140ms; }
-
-    HorizontalLayout {
-        padding: 14px;
-        spacing: 12px;
-        cross-axis-alignment: center;
-        Rectangle {
-            width: 38px;
-            height: 38px;
-            border-radius: Theme.radius-md;
-            background: root.tone.with-alpha(0.12);
-            border-width: 1px;
-            border-color: root.tone.with-alpha(0.16);
-            AppIcon {
-                name: root.glyph;
-                tone: root.tone;
-                icon-size: 18px;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-            }
-        }
-        VerticalLayout {
-            horizontal-stretch: 1;
-            spacing: 2px;
-            alignment: center;
-            Text { text: root.label; color: Theme.text-secondary; font-size: Theme.font-xs; overflow: elide; }
-            Text { text: root.value; color: Theme.text; font-size: Theme.font-2xl; font-weight: 600; }
-        }
-        Text {
-            text: "›";
-            color: root.selected ? root.tone : Theme.text-muted;
-            font-size: Theme.font-xl;
-            vertical-alignment: center;
-        }
-    }
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    focus := FocusScope {
-        width: 0px;
-        key-pressed(event) => {
-            if event.text == Key.Space || event.text == Key.Return {
-                root.clicked();
-                return accept;
-            }
-            return reject;
-        }
-    }
-    if root.has-focus: Rectangle {
-        x: -2px;
-        y: -2px;
-        width: parent.width + 4px;
-        height: parent.height + 4px;
-        border-radius: Theme.radius-lg;
-        border-width: 2px;
-        border-color: Theme.accent.with-alpha(0.72);
-    }
-    states [
-        pressed when ta.pressed: {
-            background: root.tone.with-alpha(0.16);
-            border-color: root.tone.with-alpha(0.50);
-        }
-        hover when ta.has-hover: {
-            background: root.selected ? root.tone.with-alpha(0.13) : Theme.panel-hover;
-            border-color: root.tone.with-alpha(0.38);
-        }
-    ]
-}
-
 component MetricTile inherits Rectangle {
     in property <string> label: "";
     in property <string> value: "—";
     in property <string> unit: "";
     in property <string> caption: "";
+    in property <string> glyph: "";
+    in property <bool> embedded: false;
     in property <color> tone: Theme.accent;
     in property <[MetricPoint]> history: [];
     height: 118px;
     min-width: 0px;
     horizontal-stretch: 1;
-    border-radius: Theme.radius-md;
-    background: Theme.panel-raised;
-    border-width: 1px;
+    border-radius: root.embedded ? 0px : Theme.radius-md;
+    background: root.embedded ? transparent : Theme.panel-raised;
+    border-width: root.embedded ? 0px : 1px;
     border-color: Theme.border-soft;
 
     VerticalLayout {
-        padding: 14px;
+        padding: root.embedded ? 12px : 14px;
         spacing: 6px;
         HorizontalLayout {
+            spacing: 6px;
             cross-axis-alignment: center;
+            if root.glyph != "": AppIcon {
+                name: root.glyph;
+                tone: Theme.text-muted;
+                icon-size: 14px;
+            }
             Text {
                 text: root.label;
                 color: Theme.text-secondary;
@@ -502,7 +395,7 @@ component MetricTile inherits Rectangle {
                 min-width: 0px;
                 overflow: elide;
             }
-            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.tone; }
+            if !root.embedded: Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.tone; }
         }
         HorizontalLayout {
             spacing: 5px;
@@ -539,15 +432,11 @@ component ServiceRow inherits Rectangle {
     in property <bool> selected: false;
     out property <bool> has-focus: focus.has-focus;
     callback select;
-    callback start;
-    callback stop;
-    callback restart;
-    height: 70px;
+    height: 62px;
     horizontal-stretch: 1;
     border-radius: Theme.radius-sm;
     background: root.selected ? Theme.accent-soft : transparent;
-    border-width: 1px;
-    border-color: root.selected ? Theme.accent.with-alpha(0.30) : transparent;
+    border-width: 0px;
     forward-focus: focus;
     accessible-role: list-item;
     accessible-label: root.item.name + "，" + Ui.state-label(root.item.state);
@@ -562,7 +451,7 @@ component ServiceRow inherits Rectangle {
         visible: root.selected;
         x: 0px;
         y: 17px;
-        width: 3px;
+        width: 2px;
         height: 36px;
         border-radius: 2px;
         background: Theme.accent;
@@ -573,12 +462,10 @@ component ServiceRow inherits Rectangle {
         spacing: 8px;
         cross-axis-alignment: center;
         Rectangle {
-            width: 34px;
-            height: 34px;
-            border-radius: 9px;
-            background: Ui.kind-tone(root.item.kind).with-alpha(0.12);
-            border-width: 1px;
-            border-color: Ui.kind-tone(root.item.kind).with-alpha(0.16);
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: Ui.kind-tone(root.item.kind).with-alpha(0.10);
             AppIcon {
                 name: Ui.kind-glyph(root.item.kind);
                 tone: Ui.kind-tone(root.item.kind);
@@ -607,35 +494,15 @@ component ServiceRow inherits Rectangle {
                 overflow: elide;
             }
         }
-        Pill {
-            label: Ui.state-label(root.item.state);
-            tone: Ui.state-tone(root.item.state);
-            max-label-width: 56px;
-            height: 22px;
-        }
         HorizontalLayout {
-            spacing: 3px;
+            spacing: 6px;
             cross-axis-alignment: center;
-            if root.item.state == "stopped" || root.item.state == "failed": IconButton {
-                glyph: "play";
-                tooltip: "启动";
-                tone: Theme.success;
-                size: 28px;
-                clicked => { root.start(); }
-            }
-            if root.item.state == "running" || root.item.state == "degraded": IconButton {
-                glyph: "stop";
-                tooltip: "停止";
-                tone: Theme.text-secondary;
-                size: 28px;
-                clicked => { root.stop(); }
-            }
-            if root.item.state == "running" || root.item.state == "degraded" || root.item.state == "failed": IconButton {
-                glyph: "restart";
-                tooltip: "重启";
-                tone: Theme.accent;
-                size: 28px;
-                clicked => { root.restart(); }
+            StatusDot { tone: Ui.state-tone(root.item.state); width: 7px; height: 7px; }
+            Text {
+                text: Ui.state-label(root.item.state);
+                color: Theme.text-secondary;
+                font-size: Theme.font-xs;
+                vertical-alignment: center;
             }
         }
     }
@@ -711,4 +578,4 @@ component Toast inherits Rectangle {
     }
 }
 
-export { StatusDot, AppIcon, Pill, IconButton, NavItem, SegmentButton, TextButton, EmptyState, KpiCard, MetricTile, ServiceRow, LogRow, Toast }
+export { StatusDot, AppIcon, IconButton, NavItem, SegmentButton, TextButton, EmptyState, MetricTile, ServiceRow, LogRow, Toast }
