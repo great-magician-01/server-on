@@ -1,5 +1,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=ui/app.slint");
+    println!("cargo:rerun-if-changed=ui/components.slint");
+    println!("cargo:rerun-if-changed=ui/models.slint");
+    println!("cargo:rerun-if-changed=ui/theme.slint");
     println!("cargo:rerun-if-changed=ui/tray.slint");
     println!("cargo:rerun-if-changed=../../assets/icon/server-on.ico");
     println!("cargo:rerun-if-changed=../../assets/icon/server-on.svg");
@@ -7,7 +10,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../assets/icon/tray-32.png");
     println!("cargo:rerun-if-env-changed=SLINT_STYLE");
 
-    let style = std::env::var("SLINT_STYLE").unwrap_or_else(|_| "fluent-dark".into());
+    let style = std::env::var("SLINT_STYLE").unwrap_or_else(|_| "fluent".into());
     let config = slint_build::CompilerConfiguration::new().with_style(style);
     slint_build::compile_with_config("ui/app.slint", config)
         .expect("failed to compile crates/gui/ui/app.slint");

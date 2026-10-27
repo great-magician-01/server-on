@@ -9,72 +9,469 @@ component StatusDot inherits Rectangle {
     background: root.tone;
 }
 
+component AppIcon inherits Rectangle {
+    in property <string> name: "grid";
+    in property <color> tone: Theme.text-secondary;
+    in property <length> icon-size: 16px;
+    private property <bool> filled: root.name == "play" || root.name == "stop" || root.name == "moon" || root.name == "windows";
+    width: root.icon-size;
+    height: root.icon-size;
+    accessible-role: none;
+
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: root.name == "play" ? "M 5 3 L 13 8 L 5 13 Z" :
+            root.name == "stop" ? "M 4 4 L 12 4 L 12 12 L 4 12 Z" :
+            root.name == "windows" ? "M 2 3 L 7.3 3 L 7.3 7.3 L 2 7.3 Z M 8.7 3 L 14 3 L 14 7.3 L 8.7 7.3 Z M 2 8.7 L 7.3 8.7 L 7.3 14 L 2 14 Z M 8.7 8.7 L 14 8.7 L 14 14 L 8.7 14 Z" :
+            root.name == "container" ? "M 8 1.8 L 13.5 5 L 13.5 11 L 8 14.2 L 2.5 11 L 2.5 5 Z M 2.5 5 L 8 8.2 L 13.5 5 M 8 8.2 L 8 14.2 M 5.3 3.4 L 10.8 6.6" :
+            root.name == "terminal" ? "M 3 4 L 6.5 8 L 3 12 M 9 12 L 13 12" :
+            root.name == "warning" ? "M 8 2 L 14.5 13.5 L 1.5 13.5 Z M 8 6 L 8 9.5 M 8 12 L 8 12.1" :
+            root.name == "restart" || root.name == "refresh" ? "M 14 8 A 6 6 0 1 1 12.24 3.76 L 14 5.33 M 14 2 L 14 5.33 L 10.67 5.33" :
+            root.name == "sun" ? "M 11 8 A 3 3 0 1 1 10.99 8 M 8 1 L 8 3 M 8 13 L 8 15 M 1 8 L 3 8 M 13 8 L 15 8 M 3 3 L 4.4 4.4 M 11.6 11.6 L 13 13 M 3 13 L 4.4 11.6 M 11.6 4.4 L 13 3" :
+            root.name == "moon" ? "M 12.5 11.5 A 6 6 0 0 1 4.5 3.5 A 6.5 6.5 0 1 0 12.5 11.5 Z" :
+            root.name == "close" ? "M 4 4 L 12 12 M 12 4 L 4 12" :
+            "M 2.5 2.5 L 6.5 2.5 L 6.5 6.5 L 2.5 6.5 Z M 9.5 2.5 L 13.5 2.5 L 13.5 6.5 L 9.5 6.5 Z M 2.5 9.5 L 6.5 9.5 L 6.5 13.5 L 2.5 13.5 Z M 9.5 9.5 L 13.5 9.5 L 13.5 13.5 L 9.5 13.5 Z";
+        fill: root.filled ? root.tone : transparent;
+        stroke: root.filled ? transparent : root.tone;
+        stroke-width: root.name == "grid" ? 1.3px : 1.6px;
+    }
+}
+
 component Pill inherits Rectangle {
     in property <string> label: "";
     in property <color> tone: Theme.text-secondary;
+    in property <length> max-label-width: 160px;
     height: 24px;
     border-radius: 12px;
-    background: root.tone.with-alpha(0.11);
+    background: root.tone.with-alpha(0.10);
     border-width: 1px;
-    border-color: root.tone.with-alpha(0.2);
+    border-color: root.tone.with-alpha(0.20);
     horizontal-stretch: 0;
     HorizontalLayout {
         padding-left: 9px;
         padding-right: 9px;
-        spacing: 5px;
+        spacing: 6px;
         alignment: center;
+        cross-axis-alignment: center;
         Rectangle { width: 5px; height: 5px; border-radius: 2.5px; background: root.tone; }
-        Text { text: root.label; color: root.tone; font-size: 11px; vertical-alignment: center; }
+        Text {
+            text: root.label;
+            color: root.tone;
+            font-size: Theme.font-xs;
+            vertical-alignment: center;
+            min-width: 0px;
+            max-width: root.max-label-width;
+            overflow: elide;
+        }
     }
 }
 
 component IconButton inherits Rectangle {
-    in property <string> glyph: "·";
+    in property <string> glyph: "grid";
     in property <string> tooltip: "";
     in property <color> tone: Theme.text-secondary;
     in property <bool> active: true;
+    in property <length> size: 32px;
+    out property <bool> has-focus: focus.has-focus;
     callback clicked;
-    width: 32px;
-    height: 32px;
-    border-radius: 7px;
-    opacity: root.active ? 1 : 0.35;
-    background: root.tone.with-alpha(0.06);
+    width: root.size;
+    height: root.size;
+    border-radius: Theme.radius-sm;
+    background: root.active ? root.tone.with-alpha(0.06) : Theme.overlay-hover;
     border-width: 1px;
-    border-color: root.tone.with-alpha(0.12);
-    Text { text: root.glyph; color: root.tone; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
-    ta := TouchArea { enabled: root.active; clicked => { root.clicked(); } }
-    states [ hover when ta.has-hover && root.active: { background: root.tone.with-alpha(0.16); } ]
+    border-color: root.active ? root.tone.with-alpha(0.13) : Theme.border-soft;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-enabled: root.active;
+    accessible-label: root.tooltip;
+    accessible-action-default => { if root.active { root.clicked(); } }
+    animate background, border-color { duration: 120ms; }
+
+    AppIcon {
+        name: root.glyph;
+        tone: root.active ? root.tone : Theme.text-muted;
+        icon-size: root.size <= 28px ? 13px : 15px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    ta := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        enabled: root.active;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if root.has-focus && root.active: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.72);
+    }
+    states [
+        pressed when ta.pressed && root.active: {
+            background: root.tone.with-alpha(0.24);
+            border-color: root.tone.with-alpha(0.36);
+        }
+        hover when ta.has-hover && root.active: {
+            background: root.tone.with-alpha(0.15);
+            border-color: root.tone.with-alpha(0.28);
+        }
+    ]
     Tooltip { text: @markdown("\{root.tooltip}"); }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> glyph: "grid";
+    in property <string> label: "";
+    in property <int> count: 0;
+    in property <bool> selected: false;
+    out property <bool> has-focus: focus.has-focus;
+    callback clicked;
+    height: 38px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.accent-soft : transparent;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent.with-alpha(0.20) : transparent;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-label: root.label + " " + root.count;
+    accessible-action-default => { root.clicked(); }
+    animate background, border-color { duration: 120ms; }
+
+    Rectangle {
+        visible: root.selected;
+        x: 0px;
+        y: 9px;
+        width: 3px;
+        height: 20px;
+        border-radius: 2px;
+        background: Theme.accent;
+    }
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 9px;
+        cross-axis-alignment: center;
+        AppIcon {
+            name: root.glyph;
+            tone: root.selected ? Theme.accent : Theme.text-muted;
+            icon-size: 16px;
+        }
+        Text {
+            text: root.label;
+            color: root.selected ? Theme.text : Theme.text-secondary;
+            font-size: Theme.font-sm;
+            font-weight: root.selected ? 600 : 400;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            overflow: elide;
+        }
+        Text {
+            text: "" + root.count;
+            color: root.selected ? Theme.accent : Theme.text-muted;
+            font-size: Theme.font-xs;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if root.has-focus: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.72);
+    }
+    states [
+        pressed when ta.pressed && !root.selected: { background: Theme.accent-soft; }
+        hover when ta.has-hover && !root.selected: { background: Theme.panel-hover; }
+    ]
+}
+
+component SegmentButton inherits Rectangle {
+    in property <string> label: "";
+    in property <bool> selected: false;
+    in property <length> button-width: 64px;
+    out property <bool> has-focus: focus.has-focus;
+    callback clicked;
+    width: root.button-width;
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.panel-raised : transparent;
+    border-width: 1px;
+    border-color: root.selected ? Theme.border-strong : transparent;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    animate background, border-color { duration: 120ms; }
+
+    Text {
+        text: root.label;
+        color: root.selected ? Theme.text : Theme.text-muted;
+        font-size: Theme.font-sm;
+        font-weight: root.selected ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+        overflow: elide;
+        accessible-role: none;
+    }
+    Rectangle {
+        visible: root.selected;
+        x: (parent.width - 18px) / 2;
+        y: parent.height - 3px;
+        width: 18px;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if root.has-focus: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.72);
+    }
+    states [
+        pressed when ta.pressed && !root.selected: { background: Theme.accent-soft; }
+        hover when ta.has-hover && !root.selected: { background: Theme.panel-hover; }
+    ]
+}
+
+component TextButton inherits Rectangle {
+    in property <string> label: "";
+    in property <color> tone: Theme.accent;
+    in property <bool> active: true;
+    out property <bool> has-focus: focus.has-focus;
+    callback clicked;
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    horizontal-stretch: 0;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-enabled: root.active;
+    accessible-label: root.label;
+    accessible-action-default => { if root.active { root.clicked(); } }
+    animate background { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        alignment: center;
+        cross-axis-alignment: center;
+        Text {
+            text: root.label;
+            color: root.active ? root.tone : Theme.text-muted;
+            font-size: Theme.font-xs;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        enabled: root.active;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if root.has-focus && root.active: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.72);
+    }
+    states [
+        pressed when ta.pressed && root.active: { background: Theme.accent-soft; }
+        hover when ta.has-hover && root.active: { background: Theme.panel-hover; }
+    ]
+}
+
+component EmptyState inherits VerticalLayout {
+    in property <string> glyph: "grid";
+    in property <string> title: "";
+    in property <string> detail: "";
+    alignment: center;
+    cross-axis-alignment: center;
+    spacing: Theme.space-2;
+    horizontal-stretch: 1;
+
+    Rectangle {
+        width: 44px;
+        height: 44px;
+        border-radius: Theme.radius-lg;
+        background: Theme.accent-soft;
+        AppIcon {
+            name: root.glyph;
+            tone: Theme.accent;
+            icon-size: 22px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+    Text { text: root.title; color: Theme.text-secondary; font-size: Theme.font-md; horizontal-alignment: center; }
+    Text {
+        text: root.detail;
+        color: Theme.text-muted;
+        font-size: Theme.font-xs;
+        horizontal-alignment: center;
+        horizontal-stretch: 1;
+        max-width: 320px;
+        wrap: word-wrap;
+    }
 }
 
 component KpiCard inherits Rectangle {
     in property <string> label: "";
     in property <string> value: "0";
+    in property <string> glyph: "grid";
     in property <color> tone: Theme.accent;
+    in property <bool> selected: false;
+    out property <bool> has-focus: focus.has-focus;
     callback clicked;
-    height: 78px;
+    height: 82px;
     min-width: 0px;
     horizontal-stretch: 1;
     border-radius: Theme.radius-md;
-    background: Theme.panel;
+    background: root.selected ? root.tone.with-alpha(0.10) : Theme.panel;
     border-width: 1px;
-    border-color: Theme.border-soft;
+    border-color: root.selected ? root.tone.with-alpha(0.42) : Theme.border-soft;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-label: root.label + " " + root.value;
+    accessible-action-default => { root.clicked(); }
+    animate background, border-color { duration: 140ms; }
+
     HorizontalLayout {
         padding: 14px;
-        spacing: 11px;
-        alignment: center;
-        Rectangle { width: 4px; height: 32px; border-radius: 2px; background: root.tone; }
+        spacing: 12px;
+        cross-axis-alignment: center;
+        Rectangle {
+            width: 38px;
+            height: 38px;
+            border-radius: Theme.radius-md;
+            background: root.tone.with-alpha(0.12);
+            border-width: 1px;
+            border-color: root.tone.with-alpha(0.16);
+            AppIcon {
+                name: root.glyph;
+                tone: root.tone;
+                icon-size: 18px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
         VerticalLayout {
             horizontal-stretch: 1;
-            spacing: 3px;
+            spacing: 2px;
             alignment: center;
-            Text { text: root.label; color: Theme.text-secondary; font-size: 11px; }
-            Text { text: root.value; color: Theme.text; font-size: 24px; font-weight: 600; }
+            Text { text: root.label; color: Theme.text-secondary; font-size: Theme.font-xs; overflow: elide; }
+            Text { text: root.value; color: Theme.text; font-size: Theme.font-2xl; font-weight: 600; }
         }
-        Text { text: "›"; color: Theme.text-muted; font-size: 20px; vertical-alignment: center; }
+        Text {
+            text: "›";
+            color: root.selected ? root.tone : Theme.text-muted;
+            font-size: Theme.font-xl;
+            vertical-alignment: center;
+        }
     }
-    ta := TouchArea { clicked => { root.clicked(); } }
-    states [ hover when ta.has-hover: { background: Theme.panel-hover; border-color: root.tone.with-alpha(0.35); } ]
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if root.has-focus: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: Theme.radius-lg;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.72);
+    }
+    states [
+        pressed when ta.pressed: {
+            background: root.tone.with-alpha(0.16);
+            border-color: root.tone.with-alpha(0.50);
+        }
+        hover when ta.has-hover: {
+            background: root.selected ? root.tone.with-alpha(0.13) : Theme.panel-hover;
+            border-color: root.tone.with-alpha(0.38);
+        }
+    ]
 }
 
 component MetricTile inherits Rectangle {
@@ -88,37 +485,59 @@ component MetricTile inherits Rectangle {
     min-width: 0px;
     horizontal-stretch: 1;
     border-radius: Theme.radius-md;
-    background: Theme.panel;
+    background: Theme.panel-raised;
     border-width: 1px;
     border-color: Theme.border-soft;
+
     VerticalLayout {
-        padding: 13px;
-        spacing: 5px;
-        Text { text: root.label; color: Theme.text-secondary; font-size: 11px; }
+        padding: 14px;
+        spacing: 6px;
+        HorizontalLayout {
+            cross-axis-alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text-secondary;
+                font-size: Theme.font-xs;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                overflow: elide;
+            }
+            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.tone; }
+        }
         HorizontalLayout {
             spacing: 5px;
-            alignment: end;
-            Text { text: root.value; color: Theme.text; font-size: 22px; font-weight: 600; }
-            Text { text: root.unit; color: Theme.text-muted; font-size: 11px; vertical-alignment: bottom; }
+            cross-axis-alignment: end;
+            Text { text: root.value; color: Theme.text; font-size: Theme.font-2xl; font-weight: 600; }
+            Text { text: root.unit; color: Theme.text-muted; font-size: Theme.font-xs; vertical-alignment: bottom; }
         }
         if root.history.length > 0: HorizontalLayout {
-            height: 32px;
+            height: 30px;
             spacing: 2px;
             alignment: end;
+            cross-axis-alignment: end;
             for point in root.history: Rectangle {
-                width: 3px;
-                height: 4px + point.value * 26px;
+                horizontal-stretch: 1;
+                min-width: 2px;
+                max-width: 12px;
+                height: 4px + point.value * 24px;
                 border-radius: 2px;
-                background: root.tone.with-alpha(0.55 + point.value * 0.35);
+                background: root.tone.with-alpha(0.38 + point.value * 0.45);
             }
         }
-        if root.history.length == 0: Text { text: root.caption == "" ? "等待采样" : root.caption; color: Theme.text-muted; font-size: 11px; }
+        if root.history.length == 0: Text {
+            text: root.caption == "" ? "等待采样" : root.caption;
+            color: Theme.text-muted;
+            font-size: Theme.font-xs;
+            min-width: 0px;
+            overflow: elide;
+        }
     }
 }
 
 component ServiceRow inherits Rectangle {
     in property <ServiceItem> item;
     in property <bool> selected: false;
+    out property <bool> has-focus: focus.has-focus;
     callback select;
     callback start;
     callback stop;
@@ -128,56 +547,168 @@ component ServiceRow inherits Rectangle {
     border-radius: Theme.radius-sm;
     background: root.selected ? Theme.accent-soft : transparent;
     border-width: 1px;
-    border-color: root.selected ? Theme.accent.with-alpha(0.35) : transparent;
+    border-color: root.selected ? Theme.accent.with-alpha(0.30) : transparent;
+    forward-focus: focus;
+    accessible-role: list-item;
+    accessible-label: root.item.name + "，" + Ui.state-label(root.item.state);
+    accessible-action-default => { root.select(); }
+    animate background, border-color { duration: 120ms; }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+    }
+    Rectangle {
+        visible: root.selected;
+        x: 0px;
+        y: 17px;
+        width: 3px;
+        height: 36px;
+        border-radius: 2px;
+        background: Theme.accent;
+    }
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 7px;
         spacing: 8px;
-        alignment: center;
+        cross-axis-alignment: center;
         Rectangle {
-            width: 34px; height: 34px; border-radius: 9px;
-            background: Ui.kind-tone(root.item.kind).with-alpha(0.13);
-            Text { text: Ui.kind-glyph(root.item.kind); color: Ui.kind-tone(root.item.kind); font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: Ui.kind-tone(root.item.kind).with-alpha(0.12);
+            border-width: 1px;
+            border-color: Ui.kind-tone(root.item.kind).with-alpha(0.16);
+            AppIcon {
+                name: Ui.kind-glyph(root.item.kind);
+                tone: Ui.kind-tone(root.item.kind);
+                icon-size: 16px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
         }
         VerticalLayout {
-            horizontal-stretch: 1; spacing: 4px; alignment: center;
-            Text { text: root.item.name; color: Theme.text; font-size: 12px; font-weight: 500; overflow: elide; }
-            Text { text: root.item.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+            horizontal-stretch: 1;
+            spacing: 4px;
+            alignment: center;
+            Text {
+                text: root.item.name;
+                color: Theme.text;
+                font-size: Theme.font-sm;
+                font-weight: 500;
+                min-width: 0px;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.subtitle;
+                color: Theme.text-muted;
+                font-size: Theme.font-xs;
+                min-width: 0px;
+                overflow: elide;
+            }
         }
-        Pill { label: Ui.state-label(root.item.state); tone: Ui.state-tone(root.item.state); }
+        Pill {
+            label: Ui.state-label(root.item.state);
+            tone: Ui.state-tone(root.item.state);
+            max-label-width: 56px;
+            height: 22px;
+        }
         HorizontalLayout {
             spacing: 3px;
-            IconButton { glyph: "▶"; tooltip: "启动"; tone: Theme.success; active: root.item.state == "stopped" || root.item.state == "failed"; clicked => { root.start(); } }
-            IconButton { glyph: "■"; tooltip: "停止"; tone: Theme.text-secondary; active: root.item.state == "running" || root.item.state == "degraded"; clicked => { root.stop(); } }
-            IconButton { glyph: "↻"; tooltip: "重启"; tone: Theme.accent; active: root.item.state == "running" || root.item.state == "degraded" || root.item.state == "failed"; clicked => { root.restart(); } }
+            cross-axis-alignment: center;
+            if root.item.state == "stopped" || root.item.state == "failed": IconButton {
+                glyph: "play";
+                tooltip: "启动";
+                tone: Theme.success;
+                size: 28px;
+                clicked => { root.start(); }
+            }
+            if root.item.state == "running" || root.item.state == "degraded": IconButton {
+                glyph: "stop";
+                tooltip: "停止";
+                tone: Theme.text-secondary;
+                size: 28px;
+                clicked => { root.stop(); }
+            }
+            if root.item.state == "running" || root.item.state == "degraded" || root.item.state == "failed": IconButton {
+                glyph: "restart";
+                tooltip: "重启";
+                tone: Theme.accent;
+                size: 28px;
+                clicked => { root.restart(); }
+            }
         }
     }
-    ta := TouchArea { clicked => { root.select(); } }
-    states [ hover when ta.has-hover && !root.selected: { background: Theme.panel-hover; } ]
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.select();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if root.has-focus: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.72);
+    }
+    states [
+        pressed when ta.pressed && !root.selected: { background: Theme.accent-soft; }
+        hover when ta.has-hover && !root.selected: { background: Theme.panel-hover; }
+    ]
 }
 
 component LogRow inherits HorizontalLayout {
     in property <LogLine> line;
-    spacing: 9px;
-    alignment: start;
-    Text { text: root.line.time; color: Theme.text-muted; font-family: Theme.mono-font; font-size: 11px; width: 58px; }
-    Text { text: Ui.log-label(root.line.level); color: Ui.log-tone(root.line.level); font-size: 11px; width: 30px; }
-    Text { text: root.line.message; color: Theme.log-text; font-family: Theme.mono-font; font-size: 11px; horizontal-stretch: 1; wrap: word-wrap; }
+    padding-top: 2px;
+    padding-bottom: 2px;
+    spacing: 10px;
+    cross-axis-alignment: start;
+    Text { text: root.line.time; color: Theme.text-muted; font-family: Theme.mono-font; font-size: Theme.font-xs; width: 62px; }
+    Text { text: Ui.log-label(root.line.level); color: Ui.log-tone(root.line.level); font-size: Theme.font-xs; width: 34px; }
+    Text {
+        text: root.line.message;
+        color: Theme.log-text;
+        font-family: Theme.mono-font;
+        font-size: Theme.font-sm;
+        horizontal-stretch: 1;
+        min-width: 0px;
+        wrap: word-wrap;
+    }
 }
 
 component Toast inherits Rectangle {
     in property <string> message: "";
     in property <color> tone: Theme.accent;
-    height: 42px;
+    height: 44px;
     border-radius: Theme.radius-md;
     background: Theme.panel-raised;
     border-width: 1px;
     border-color: root.tone.with-alpha(0.35);
+    drop-shadow-color: Theme.shadow;
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 4px;
     HorizontalLayout {
-        padding-left: 13px; padding-right: 13px; spacing: 8px; alignment: center;
+        padding-left: 13px;
+        padding-right: 13px;
+        spacing: 9px;
+        cross-axis-alignment: center;
         StatusDot { tone: root.tone; }
-        Text { text: root.message; color: Theme.text; font-size: 12px; horizontal-stretch: 1; overflow: elide; }
+        Text {
+            text: root.message;
+            color: Theme.text;
+            font-size: Theme.font-sm;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            overflow: elide;
+        }
     }
 }
 
-export { StatusDot, Pill, IconButton, KpiCard, MetricTile, ServiceRow, LogRow, Toast }
+export { StatusDot, AppIcon, Pill, IconButton, NavItem, SegmentButton, TextButton, EmptyState, KpiCard, MetricTile, ServiceRow, LogRow, Toast }
