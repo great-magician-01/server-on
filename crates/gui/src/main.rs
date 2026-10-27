@@ -756,7 +756,7 @@ fn render_services(
             }
         })
         .collect();
-    services.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    services.sort_by_key(|service| service.name.to_lowercase());
     let active_filter = window.get_active_filter().to_string();
     let visible_service_count = services
         .iter()
