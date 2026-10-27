@@ -1,38 +1,54 @@
 export global Theme {
     in-out property <bool> dark: true;
 
-    out property <color> bg: dark ? #0B111B : #F3F6FA;
-    out property <color> bg-deep: dark ? #080D15 : #E8EDF4;
-    out property <color> surface: dark ? #101A28 : #FFFFFF;
-    out property <color> panel: dark ? #121E2D : #FFFFFF;
-    out property <color> panel-raised: dark ? #19293B : #F8FAFD;
-    out property <color> panel-hover: dark ? #1B2C40 : #EDF4FB;
-    out property <color> sidebar: dark ? #0D1622 : #EAF0F7;
-    out property <color> border: dark ? #26384B : #D8E1EC;
-    out property <color> border-soft: dark ? #1B2B3D : #E6EDF5;
-    out property <color> border-strong: dark ? #3B526B : #B9C9DA;
-    out property <color> text: dark ? #EDF4FC : #172435;
-    out property <color> text-secondary: dark ? #A8B8CB : #52657A;
-    out property <color> text-muted: dark ? #71859C : #7A8CA0;
-    out property <color> accent: dark ? #63C3FF : #1677C8;
-    out property <color> accent-strong: dark ? #2FA9F4 : #0E5EA8;
-    out property <color> accent-soft: dark ? #12324A : #DDEFFC;
-    out property <color> success: dark ? #4ADE9C : #138A58;
-    out property <color> warning: dark ? #F5BE6B : #A96708;
-    out property <color> danger: dark ? #FF8295 : #C53C55;
-    out property <color> info: dark ? #82C5FF : #236DB1;
-    out property <color> violet: dark ? #C4B5FD : #7355B5;
-    out property <color> teal: dark ? #5EEAD4 : #0C8B82;
-    out property <color> pink: dark ? #F5A4C5 : #B34479;
-    out property <color> log-bg: dark ? #0A121C : #F5F8FB;
-    out property <color> log-text: dark ? #C3D2E2 : #40556A;
+    out property <color> bg: dark ? #0F141A : #F4F6F9;
+    out property <color> bg-deep: dark ? #0A0E14 : #E9EEF4;
+    out property <color> surface: dark ? #141A21 : #FFFFFF;
+    out property <color> panel: dark ? #181F27 : #FFFFFF;
+    out property <color> panel-raised: dark ? #1D252E : #F8FAFC;
+    out property <color> panel-hover: dark ? #222C37 : #EEF4FA;
+    out property <color> sidebar: dark ? #10161D : #F0F3F7;
+    out property <color> border: dark ? #2A3441 : #D5DEE8;
+    out property <color> border-soft: dark ? #202A36 : #E4EAF1;
+    out property <color> border-strong: dark ? #3C4A5C : #B8C6D6;
+    out property <color> text: dark ? #EEF3F8 : #16202D;
+    out property <color> text-secondary: dark ? #B4C2D2 : #47596E;
+    out property <color> text-muted: dark ? #8B9CB1 : #5E6E82;
+    out property <color> accent: dark ? #60CDFF : #005FB8;
+    out property <color> accent-strong: dark ? #2FA9F4 : #084C8F;
+    out property <color> accent-soft: dark ? #12324A : #E5F1FC;
+    out property <color> success: dark ? #4ADE9C : #0C6C46;
+    out property <color> warning: dark ? #F5C26B : #8A5104;
+    out property <color> danger: dark ? #FF8797 : #B22F44;
+    out property <color> info: dark ? #82C5FF : #1856A8;
+    out property <color> violet: dark ? #C4B5FD : #6547AA;
+    out property <color> teal: dark ? #5EEAD4 : #0A6F68;
+    out property <color> pink: dark ? #F5A4C5 : #9A3664;
+    out property <color> log-bg: dark ? #0B1119 : #F7F9FC;
+    out property <color> log-text: dark ? #C6D3E1 : #36495D;
     out property <color> overlay-hover: dark ? #FFFFFF08 : #0B355408;
-    out property <color> shadow: dark ? #00000040 : #17304D12;
+    out property <color> shadow: dark ? #00000055 : #15304D18;
     out property <string> ui-font: "Microsoft YaHei UI";
     out property <string> mono-font: "Cascadia Mono";
+    out property <length> font-xs: 11px;
+    out property <length> font-sm: 12px;
+    out property <length> font-md: 13px;
+    out property <length> font-lg: 15px;
+    out property <length> font-xl: 20px;
+    out property <length> font-2xl: 24px;
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-5: 20px;
+    out property <length> space-6: 24px;
+    out property <length> control-sm: 28px;
+    out property <length> control-md: 32px;
+    out property <length> control-lg: 36px;
     out property <length> radius-sm: 6px;
     out property <length> radius-md: 10px;
     out property <length> radius-lg: 14px;
+    out property <length> radius-pill: 999px;
 }
 
 export global Ui {
@@ -78,10 +94,10 @@ export global Ui {
         return kind;
     }
     public pure function kind-glyph(kind: string) -> string {
-        if kind == "windows" { return "W"; }
-        if kind == "wsl" { return ">_"; }
-        if kind == "container" { return "▣"; }
-        return "·";
+        if kind == "windows" { return "windows"; }
+        if kind == "wsl" { return "terminal"; }
+        if kind == "container" { return "container"; }
+        return "grid";
     }
     public pure function kind-tone(kind: string) -> color {
         if kind == "windows" { return Theme.info; }
