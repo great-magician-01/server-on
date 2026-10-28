@@ -1,5 +1,5 @@
 use crate::metrics::{parse_memory_bytes, parse_percentage};
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::Value;
 use server_on_core::discovery::ContainerInfo;
 use server_on_core::state::{HealthState, ServiceState};
@@ -17,9 +17,10 @@ pub async fn stop(
     timeout_seconds: u64,
 ) -> Result<ContainerInfo> {
     let timeout = timeout_seconds.to_string();
-    run(
+    run_with_timeout(
         distribution,
         &["docker", "stop", "--time", &timeout, container_id],
+        std::time::Duration::from_secs(timeout_seconds.saturating_add(30)),
     )
     .await?;
     inspect(distribution, container_id).await
@@ -31,9 +32,10 @@ pub async fn restart(
     timeout_seconds: u64,
 ) -> Result<ContainerInfo> {
     let timeout = timeout_seconds.to_string();
-    run(
+    run_with_timeout(
         distribution,
         &["docker", "restart", "--time", &timeout, container_id],
+        std::time::Duration::from_secs(timeout_seconds.saturating_add(30)),
     )
     .await?;
     inspect(distribution, container_id).await
@@ -214,6 +216,19 @@ pub async fn logs(distribution: &str, container_id: &str, lines: usize) -> Resul
 }
 
 async fn run(distribution: &str, arguments: &[&str]) -> Result<Output> {
+    run_with_timeout(
+        distribution,
+        arguments,
+        crate::command::DEFAULT_COMMAND_TIMEOUT,
+    )
+    .await
+}
+
+async fn run_with_timeout(
+    distribution: &str,
+    arguments: &[&str],
+    timeout_duration: std::time::Duration,
+) -> Result<Output> {
     let mut command = Command::new("wsl.exe");
     command
         .arg("--distribution")
@@ -221,10 +236,12 @@ async fn run(distribution: &str, arguments: &[&str]) -> Result<Output> {
         .arg("--")
         .args(arguments);
     crate::command::hide_console(&mut command);
-    let output = command
-        .output()
-        .await
-        .with_context(|| format!("无法在 WSL 发行版 {distribution} 中执行 Docker 命令"))?;
+    let output = crate::command::output(
+        &mut command,
+        timeout_duration,
+        &format!("无法在 WSL 发行版 {distribution} 中执行 Docker 命令"),
+    )
+    .await?;
     if output.status.success() {
         Ok(output)
     } else {

@@ -52,4 +52,26 @@ pub struct ServiceInstanceState {
     #[serde(default)]
     pub unit_name: Option<String>,
     pub process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub recovery_identity: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_instance_state_without_platform_identity_still_loads() {
+        let json = r#"{
+            "service_id":"service:wsl",
+            "instance_id":"6bc4b6f3-26a2-43f3-bf16-e16f28bc2fa8",
+            "process_id":42,
+            "process_group_id":42,
+            "job_name":null,
+            "unit_name":null,
+            "process_started_at":null
+        }"#;
+        let instance: ServiceInstanceState = serde_json::from_str(json).unwrap();
+        assert_eq!(instance.recovery_identity, None);
+    }
 }

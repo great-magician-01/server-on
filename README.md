@@ -144,6 +144,7 @@ exec npm run dev
 - 有 systemd 的 WSL 发行版使用 transient user service 和 `systemctl --user` 管理，日志通过 journal 获取。
 - 非 systemd WSL 发行版使用独立 Linux 进程组，先 `SIGTERM`，超时后 `SIGKILL`。
 - daemon 重启后会校验恢复信息。无法确认旧实例身份时显示 `Unknown`，不会盲目重复启动或按旧 PID 杀进程。
+- 非 systemd WSL 服务额外校验 boot ID 和进程组领导进程启动时间；查询失败或身份不明时不会接管、启动替代实例或发送信号。
 
 ### WSL 中已有 Docker 容器
 
@@ -169,6 +170,7 @@ docker restart --time <seconds> <container-id>
 
 - 关闭主窗口默认隐藏到托盘，daemon 和服务继续运行；托盘菜单可恢复窗口、刷新发现或退出 GUI。
 - 第二个 GUI 实例会激活已有窗口，不会创建第二个托盘图标。
+- daemon 断线后 GUI 会带退避自动重连，并重新对账服务快照和当前日志。
 - 顶部“浅色/深色”按钮切换主题，选择会保存到 daemon 配置。
 - 概览页只采样当前选中服务：Windows 使用 Job 指标，WSL 使用 systemd/进程组指标，Docker 使用 `docker stats`。CPU 显示机器占比，首次采样没有差值时显示采样中。
 - 图标母版和多尺寸生成说明见 `assets/icon/README.md`。
@@ -181,11 +183,11 @@ docker restart --time <seconds> <container-id>
 %LOCALAPPDATA%\ServerOn\
   config.json       服务定义、策略和设置
   state.json        实例恢复信息
-  logs\             按服务划分的日志
+  logs\             按服务划分的日志及 daemon.log 管理进程诊断日志
   backups\          配置备份
 ```
 
-配置写入使用临时文件替换并保留备份，日志按大小轮转。GUI 关闭只断开客户端，不删除这些文件。
+配置写入使用临时文件替换并保留备份，服务日志按大小轮转。daemon 自身的 `logs\daemon.log` 也使用有界轮转，自动启动时丢弃 stderr 不会丢失后台诊断。GUI 关闭只断开客户端，不删除这些文件。
 
 ## 发布与安装
 

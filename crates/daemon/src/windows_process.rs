@@ -177,18 +177,22 @@ impl WindowsProcess {
         job_name: &str,
         pid: u32,
         expected_started_at: Option<DateTime<Utc>>,
-    ) -> Result<(Self, WindowsProcessController)> {
+    ) -> Result<Option<(Self, WindowsProcessController)>> {
         let Some(expected_started_at) = expected_started_at else {
             bail!("缺少进程启动时间，拒绝接管旧进程");
         };
-        let process = unsafe {
+        let process = match unsafe {
             OpenProcess(
                 PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
                 false,
                 pid,
             )
-        }
-        .context("无法重新打开受管 Windows 进程")?;
+        } {
+            Ok(process) => process,
+            // OpenProcess reports a nonexistent PID as ERROR_INVALID_PARAMETER.
+            Err(error) if error.code().0 as u32 == 0x80070057 => return Ok(None),
+            Err(error) => return Err(error).context("无法重新打开受管 Windows 进程"),
+        };
         let process = OwnedHandle::new(process);
         verify_process_start(&process, expected_started_at)?;
         let job_name_wide = wide(job_name);
@@ -211,7 +215,7 @@ impl WindowsProcess {
         if controller.active_processes()? == 0 {
             bail!("Job Object 中没有活动进程");
         }
-        Ok((
+        Ok(Some((
             Self {
                 pid,
                 process,
@@ -219,7 +223,7 @@ impl WindowsProcess {
                 job_name: job_name.to_owned(),
             },
             controller,
-        ))
+        )))
     }
 
     pub fn pid(&self) -> u32 {
@@ -555,4 +559,17 @@ fn build_environment_block(environment: &BTreeMap<String, String>) -> Option<Vec
     }
     block.push('\0');
     Some(block.encode_utf16().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_recovery_pid_is_a_completed_exit_not_unknown_identity() {
+        let recovered =
+            WindowsProcess::recover(r"Local\ServerOn-missing-test", u32::MAX, Some(Utc::now()))
+                .unwrap();
+        assert!(recovered.is_none());
+    }
 }

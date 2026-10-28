@@ -36,6 +36,8 @@ struct SharedState {
     cpu_history: Vec<f32>,
     memory_history: Vec<f64>,
     draft: bool,
+    config_revision: u64,
+    save_generation: u64,
 }
 
 impl SharedState {
@@ -53,7 +55,35 @@ impl SharedState {
             cpu_history: Vec::new(),
             memory_history: Vec::new(),
             draft: false,
+            config_revision: 0,
+            save_generation: 0,
         }
+    }
+
+    fn edit_config(&mut self) {
+        self.config_revision = self.config_revision.wrapping_add(1);
+    }
+
+    fn begin_config_save(&mut self) -> (u64, u64) {
+        self.save_generation = self.save_generation.wrapping_add(1);
+        (self.config_revision, self.save_generation)
+    }
+
+    fn complete_config_save(
+        &mut self,
+        revision: u64,
+        generation: u64,
+        service_id: String,
+    ) -> Option<bool> {
+        if generation != self.save_generation {
+            return None;
+        }
+        if revision != self.config_revision {
+            return Some(false);
+        }
+        self.selected_id = service_id;
+        self.draft = false;
+        Some(true)
     }
 }
 
@@ -95,7 +125,12 @@ impl AppContext {
             )
         };
         let selected = render_services(&window, &snapshot, &selected, draft);
-        self.shared.lock().unwrap().selected_id = selected;
+        let mut shared = self.shared.lock().unwrap();
+        if shared.selected_id != selected {
+            shared.edit_config();
+        }
+        shared.selected_id = selected;
+        drop(shared);
         update_tray(&self.tray, &snapshot);
     }
 
@@ -112,14 +147,19 @@ impl AppContext {
                 };
                 let selected = render_services(&window, &snapshot, &preferred, draft);
                 let selection_changed = selected != preferred;
-                shared.lock().unwrap().selected_id = selected;
+                let mut shared = shared.lock().unwrap();
+                if selection_changed {
+                    shared.edit_config();
+                }
+                shared.selected_id = selected;
+                drop(shared);
                 update_tray(&tray, &snapshot);
                 if selection_changed {
                     context.clear_logs();
                     let load_context = context.clone();
                     context.spawn(async move {
                         if let Err(error) = load_selected_logs(load_context.clone()).await {
-                            load_context.set_connection(true, format!("读取日志失败：{error:#}"));
+                            load_context.set_status(format!("读取日志失败：{error:#}"));
                         }
                     });
                 }
@@ -142,6 +182,15 @@ impl AppContext {
         });
     }
 
+    fn set_status(&self, message: String) {
+        let window = self.window.clone();
+        let _ = invoke_from_event_loop(move || {
+            if let Some(window) = window.upgrade() {
+                window.set_daemon_status(SharedString::from(message));
+            }
+        });
+    }
+
     fn set_discovery_running(&self, running: bool) {
         let window = self.window.clone();
         let _ = invoke_from_event_loop(move || {
@@ -151,14 +200,37 @@ impl AppContext {
         });
     }
 
-    fn set_config_saved(&self, saved: bool) {
+    fn finish_config_save(&self, revision: u64, generation: u64, service_id: String) {
         let window = self.window.clone();
+        let shared = self.shared.clone();
+        let context = self.clone();
         let _ = invoke_from_event_loop(move || {
+            let Some(apply) = shared
+                .lock()
+                .unwrap()
+                .complete_config_save(revision, generation, service_id)
+            else {
+                return;
+            };
             if let Some(window) = window.upgrade() {
                 window.set_config_saving(false);
-                if saved {
+                if apply {
                     window.set_config_dirty(false);
+                    context.render_shared_async();
                 }
+            }
+        });
+    }
+
+    fn finish_config_save_error(&self, generation: u64) {
+        let window = self.window.clone();
+        let shared = self.shared.clone();
+        let _ = invoke_from_event_loop(move || {
+            if shared.lock().unwrap().save_generation != generation {
+                return;
+            }
+            if let Some(window) = window.upgrade() {
+                window.set_config_saving(false);
             }
         });
     }
@@ -304,6 +376,7 @@ fn main() -> Result<()> {
                 let mut shared = context.shared.lock().unwrap();
                 shared.selected_id = id;
                 shared.draft = false;
+                shared.edit_config();
             }
             context.clear_logs();
             crate::metrics::reset(context.clone());
@@ -311,7 +384,7 @@ fn main() -> Result<()> {
             let context = context.clone();
             context.clone().spawn(async move {
                 if let Err(error) = load_selected_logs(context.clone()).await {
-                    context.set_connection(true, format!("读取日志失败：{error:#}"));
+                    context.set_status(format!("读取日志失败：{error:#}"));
                 }
             });
         }
@@ -398,6 +471,7 @@ fn main() -> Result<()> {
                 let mut shared = context.shared.lock().unwrap();
                 shared.selected_id.clear();
                 shared.draft = true;
+                shared.edit_config();
             }
             context.clear_logs();
             crate::metrics::reset(context.clone());
@@ -407,28 +481,28 @@ fn main() -> Result<()> {
             window.set_config_saving(false);
         }
     });
+    window.on_config_edited({
+        let context = context.clone();
+        move || {
+            let mut shared = context.shared.lock().unwrap();
+            shared.edit_config();
+        }
+    });
     window.on_save_service({
         let context = context.clone();
         move |config| {
             let context = context.clone();
+            let (revision, generation) = context.shared.lock().unwrap().begin_config_save();
             context.clone().spawn(async move {
                 let result = save_service(context.clone(), config).await;
                 match result {
-                    Ok(()) => {
-                        context.set_config_saved(true);
+                    Ok(service_id) => {
+                        context.finish_config_save(revision, generation, service_id);
                         context.set_connection(true, "配置已保存".into());
-                        // Renders triggered while the save was in flight still
-                        // saw config-dirty set, so they kept the draft in
-                        // selected-service. For a newly created service that
-                        // draft has an empty id, and the header buttons would
-                        // send an empty id to the daemon. Re-render after the
-                        // dirty flag is cleared so the panel binds to the
-                        // persisted service.
-                        context.render_shared_async();
                     }
                     Err(error) => {
-                        context.set_config_saved(false);
-                        context.set_connection(true, format!("保存失败：{error:#}"));
+                        context.finish_config_save_error(generation);
+                        context.set_status(format!("保存失败：{error:#}"));
                     }
                 }
             });
@@ -467,7 +541,7 @@ fn main() -> Result<()> {
                 }
                 .await;
                 if let Err(error) = result {
-                    context.set_connection(true, format!("主题保存失败：{error:#}"));
+                    context.set_status(format!("主题保存失败：{error:#}"));
                 }
             });
         }
@@ -484,28 +558,66 @@ fn main() -> Result<()> {
         move || context.clear_logs()
     });
 
-    let startup = context.clone();
-    context.clone().spawn(async move {
-        match DaemonClient::connect_or_start().await {
-            Ok(client) => {
-                *startup.client.lock().unwrap() = Some(client);
-                if let Err(error) = load_preferences(startup.clone()).await {
-                    startup.set_connection(true, format!("读取界面设置失败：{error:#}"));
-                }
-                startup.set_connection(true, "守护进程已连接".into());
-                if let Err(error) = refresh_snapshot(startup.clone()).await {
-                    startup.set_connection(true, format!("读取服务状态失败：{error:#}"));
-                }
-                startup.spawn(watch_events(startup.clone()));
-                startup.spawn(crate::metrics::watch(startup.clone()));
-            }
-            Err(error) => {
-                startup.set_connection(false, format!("守护进程连接失败：{error:#}"));
-            }
-        }
-    });
+    context.clone().spawn(maintain_connection(context.clone()));
+    context
+        .clone()
+        .spawn(crate::metrics::watch(context.clone()));
 
     window.run()?;
+    Ok(())
+}
+
+async fn maintain_connection(context: AppContext) {
+    let mut backoff = Duration::from_millis(250);
+    loop {
+        context.set_connection(false, "正在连接守护进程…".into());
+        let connected = async {
+            let client = DaemonClient::connect_or_start().await?;
+            *context.client.lock().unwrap() = Some(client.clone());
+            // The receiver is installed before this snapshot. Events arriving
+            // while it is fetched remain queued for watch_events.
+            let events = client.subscribe().await?;
+            if let Err(error) = load_preferences(context.clone()).await {
+                context.set_status(format!("读取界面设置失败：{error:#}"));
+            }
+            refresh_snapshot(context.clone()).await?;
+            context.clear_logs();
+            if let Err(error) = load_selected_logs(context.clone()).await {
+                context.set_status(format!("读取日志失败：{error:#}"));
+            }
+            Ok::<_, anyhow::Error>((client, events))
+        }
+        .await;
+
+        match connected {
+            Ok((client, events)) => {
+                backoff = Duration::from_millis(250);
+                context.set_connection(true, "守护进程已连接".into());
+                watch_events(context.clone(), client, events).await;
+            }
+            Err(error) => {
+                context.set_connection(false, format!("守护进程连接失败：{error:#}"));
+            }
+        }
+
+        *context.client.lock().unwrap() = None;
+        context.set_connection(
+            false,
+            format!(
+                "守护进程连接已断开，将在 {} 秒后重试",
+                backoff.as_secs_f32()
+            ),
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(5));
+    }
+}
+
+async fn resync(context: AppContext) -> Result<()> {
+    refresh_snapshot(context.clone()).await?;
+    if let Err(error) = load_selected_logs(context.clone()).await {
+        context.set_status(format!("读取日志失败：{error:#}"));
+    }
     Ok(())
 }
 
@@ -521,7 +633,7 @@ fn spawn_refresh_discovery(context: AppContext) {
         context.set_discovery_running(false);
         match result {
             Ok(()) => context.set_connection(true, "守护进程已连接".into()),
-            Err(error) => context.set_connection(true, format!("自动发现失败：{error:#}")),
+            Err(error) => context.set_status(format!("自动发现失败：{error:#}")),
         }
     });
 }
@@ -559,10 +671,10 @@ fn spawn_operation(context: AppContext, service_id: ServiceId, operation: Operat
         .await;
         match result {
             Ok(()) => context.set_connection(true, format!("{label}完成")),
-            Err(error) => context.set_connection(true, format!("{label}失败：{error:#}")),
+            Err(error) => context.set_status(format!("{label}失败：{error:#}")),
         }
         if let Err(error) = load_selected_logs(context.clone()).await {
-            context.set_connection(true, format!("读取日志失败：{error:#}"));
+            context.set_status(format!("读取日志失败：{error:#}"));
         }
     });
 }
@@ -606,15 +718,26 @@ async fn load_selected_logs(context: AppContext) -> Result<()> {
         return Ok(());
     }
     let service_id = ServiceId::from_string(service_id);
-    let client = context.client()?;
-    let response = client
-        .request(Command::GetLogs {
-            service_id: service_id.clone(),
-            limit: 500,
-        })
-        .await?;
-    let ResponseData::Logs(logs) = response else {
-        bail!("守护进程返回了无效日志");
+    let result = async {
+        let client = context.client()?;
+        let response = client
+            .request(Command::GetLogs {
+                service_id: service_id.clone(),
+                limit: 500,
+            })
+            .await?;
+        let ResponseData::Logs(logs) = response else {
+            bail!("守护进程返回了无效日志");
+        };
+        Ok::<_, anyhow::Error>(logs)
+    }
+    .await;
+    let logs = match result {
+        Ok(logs) => logs,
+        Err(error) => {
+            context.shared.lock().unwrap().logs.cancel_load(load_seq);
+            return Err(error);
+        }
     };
     let loaded = {
         let mut shared = context.shared.lock().unwrap();
@@ -632,18 +755,15 @@ async fn load_selected_logs(context: AppContext) -> Result<()> {
     Ok(())
 }
 
-async fn watch_events(context: AppContext) {
-    let client = match context.client() {
-        Ok(client) => client,
-        Err(_) => return,
-    };
-    let mut events = match client.subscribe().await {
-        Ok(events) => events,
-        Err(error) => {
-            context.set_connection(false, format!("事件订阅失败：{error:#}"));
-            return;
-        }
-    };
+async fn watch_events(
+    context: AppContext,
+    client: DaemonClient,
+    mut events: tokio::sync::broadcast::Receiver<DaemonEvent>,
+) {
+    let mut disconnected = client.disconnected();
+    if *disconnected.borrow() {
+        return;
+    }
     // Batch log deltas and service changes independently so neither event
     // stream can rebuild the UI once per daemon event.
     let mut log_flush = tokio::time::interval(Duration::from_millis(200));
@@ -695,11 +815,23 @@ async fn watch_events(context: AppContext) {
                             services_dirty = false;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(DaemonEvent::ResyncRequired)
+                    | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if resync(context.clone()).await.is_ok() {
+                            services_dirty = false;
+                            logs_dirty = false;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         context.set_connection(false, "守护进程事件连接已断开".into());
                         break;
                     }
+                }
+            }
+            changed = disconnected.changed() => {
+                if changed.is_err() || *disconnected.borrow() {
+                    context.set_connection(false, "守护进程连接已断开".into());
+                    break;
                 }
             }
             _ = log_flush.tick() => {
@@ -718,7 +850,7 @@ async fn watch_events(context: AppContext) {
     }
 }
 
-async fn save_service(context: AppContext, config: ServiceConfig) -> Result<()> {
+async fn save_service(context: AppContext, config: ServiceConfig) -> Result<String> {
     if config.runtime_kind == "container" {
         bail!("容器由 Docker Engine 管理，不能通过脚本编辑器修改");
     }
@@ -755,11 +887,7 @@ async fn save_service(context: AppContext, config: ServiceConfig) -> Result<()> 
         },
         "windows" => RuntimeConfig::WindowsScript {
             working_directory: config.working_directory.to_string(),
-            shell: if config.shell == "CMD" {
-                WindowsShell::Cmd
-            } else {
-                WindowsShell::PowerShell
-            },
+            shell: parse_windows_shell(&config.shell)?,
             script: config.script.to_string(),
             environment,
         },
@@ -772,12 +900,16 @@ async fn save_service(context: AppContext, config: ServiceConfig) -> Result<()> 
         .client()?
         .request(Command::UpsertService(Box::new(definition)))
         .await?;
-    {
-        let mut shared = context.shared.lock().unwrap();
-        shared.selected_id = service_id.as_str().to_owned();
-        shared.draft = false;
+    refresh_snapshot(context).await?;
+    Ok(service_id.as_str().to_owned())
+}
+
+fn parse_windows_shell(value: &str) -> Result<WindowsShell> {
+    match value {
+        "PowerShell" => Ok(WindowsShell::PowerShell),
+        "CMD" => Ok(WindowsShell::Cmd),
+        _ => bail!("Windows Shell 必须是 PowerShell 或 CMD"),
     }
-    refresh_snapshot(context).await
 }
 
 fn parse_environment(value: &str) -> Result<BTreeMap<String, String>> {
@@ -1370,5 +1502,55 @@ mod tests {
             .map(|service| service.name.as_str())
             .collect();
         assert_eq!(names, ["any-llm", "postgres"]);
+    }
+
+    #[test]
+    fn stale_save_completion_does_not_replace_newer_edits_or_selection() {
+        let mut shared = SharedState::new();
+        shared.selected_id = "service:a".into();
+        let (revision, generation) = shared.begin_config_save();
+        shared.edit_config();
+
+        assert_eq!(
+            shared.complete_config_save(revision, generation, "service:a".into()),
+            Some(false)
+        );
+        assert_eq!(shared.selected_id, "service:a");
+
+        shared.selected_id = "service:b".into();
+        shared.edit_config();
+        assert_eq!(
+            shared.complete_config_save(revision, generation, "service:a".into()),
+            Some(false)
+        );
+        assert_eq!(shared.selected_id, "service:b");
+    }
+
+    #[test]
+    fn only_latest_save_generation_can_finish() {
+        let mut shared = SharedState::new();
+        let (_, first_generation) = shared.begin_config_save();
+        let (revision, second_generation) = shared.begin_config_save();
+
+        assert_eq!(
+            shared.complete_config_save(revision, first_generation, "service:old".into()),
+            None
+        );
+        assert_eq!(
+            shared.complete_config_save(revision, second_generation, "service:new".into()),
+            Some(true)
+        );
+        assert_eq!(shared.selected_id, "service:new");
+    }
+
+    #[test]
+    fn windows_shell_is_strictly_validated() {
+        assert_eq!(
+            parse_windows_shell("PowerShell").unwrap(),
+            WindowsShell::PowerShell
+        );
+        assert_eq!(parse_windows_shell("CMD").unwrap(), WindowsShell::Cmd);
+        assert!(parse_windows_shell("cmd").is_err());
+        assert!(parse_windows_shell("bash").is_err());
     }
 }

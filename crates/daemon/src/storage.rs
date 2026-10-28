@@ -223,6 +223,42 @@ impl LogStore {
         Ok(events.into_iter().collect())
     }
 
+    pub fn max_sequence(&self) -> u64 {
+        if !self.root.exists() {
+            return 0;
+        }
+        let mut maximum = 0;
+        let Ok(services) = fs::read_dir(&self.root) else {
+            return 0;
+        };
+        for service in services.flatten() {
+            if !service.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(service.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                if file
+                    .path()
+                    .extension()
+                    .is_none_or(|extension| extension != "jsonl")
+                {
+                    continue;
+                }
+                let Ok(contents) = fs::read_to_string(file.path()) else {
+                    continue;
+                };
+                for line in contents.lines() {
+                    if let Ok(event) = serde_json::from_str::<LogEvent>(line) {
+                        maximum = maximum.max(event.sequence);
+                    }
+                }
+            }
+        }
+        maximum
+    }
+
     pub fn cleanup_expired(&self) -> Result<()> {
         if !self.root.exists() {
             return Ok(());
@@ -362,11 +398,13 @@ mod tests {
                     timestamp: Utc::now(),
                     stream: LogStream::Stdout,
                     message: format!("message-{index:02}-padding-padding"),
+                    sequence: index + 1,
                 })
                 .unwrap();
         }
         let events = store.recent(&service_id, 5).unwrap();
         assert_eq!(events.len(), 5);
         assert_eq!(events.last().unwrap().message, "message-11-padding-padding");
+        assert_eq!(store.max_sequence(), 12);
     }
 }

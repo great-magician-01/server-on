@@ -19,6 +19,7 @@ use server_on_core::state::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -43,11 +44,15 @@ pub struct ManagerInner {
     restart_attempts: Mutex<BTreeMap<ServiceId, u32>>,
     started_at: Mutex<BTreeMap<ServiceId, tokio::time::Instant>>,
     operations: Mutex<BTreeSet<ServiceId>>,
+    monitoring_lost: Mutex<BTreeSet<ServiceId>>,
     discovery_operation: tokio::sync::Mutex<()>,
     store: ConfigStore,
     state_store: StateStore,
     persisted: Mutex<PersistedState>,
     logs: Arc<LogStore>,
+    log_sequence: AtomicU64,
+    log_record: Mutex<()>,
+    log_backfill: tokio::sync::Mutex<()>,
     events: broadcast::Sender<DaemonEvent>,
 }
 
@@ -76,6 +81,7 @@ impl ServiceManager {
             config.settings.logs.max_files,
             config.settings.logs.retention_days,
         ));
+        let initial_log_sequence = logs.max_sequence();
         let statuses = config
             .services
             .iter()
@@ -106,11 +112,15 @@ impl ServiceManager {
                 restart_attempts: Mutex::new(BTreeMap::new()),
                 started_at: Mutex::new(BTreeMap::new()),
                 operations: Mutex::new(BTreeSet::new()),
+                monitoring_lost: Mutex::new(BTreeSet::new()),
                 discovery_operation: tokio::sync::Mutex::new(()),
                 store,
                 state_store,
                 persisted: Mutex::new(persisted),
                 logs,
+                log_sequence: AtomicU64::new(initial_log_sequence),
+                log_record: Mutex::new(()),
+                log_backfill: tokio::sync::Mutex::new(()),
                 events,
             }),
         })
@@ -144,6 +154,15 @@ impl ServiceManager {
 
     pub fn upsert_service(&self, definition: ServiceDefinition) -> Result<()> {
         let _commit = self.inner.config_commit.lock().unwrap();
+        if self
+            .inner
+            .operations
+            .lock()
+            .unwrap()
+            .contains(&definition.id)
+        {
+            bail!("服务已有启动、停止或重启操作正在执行，请完成后再修改配置");
+        }
         if definition.origin != ServiceOrigin::User {
             bail!("自动发现的容器不能通过服务编辑器修改");
         }
@@ -182,6 +201,9 @@ impl ServiceManager {
 
     pub fn remove_service(&self, service_id: &ServiceId) -> Result<()> {
         let _commit = self.inner.config_commit.lock().unwrap();
+        if self.inner.operations.lock().unwrap().contains(service_id) {
+            bail!("服务已有启动、停止或重启操作正在执行，请完成后再删除");
+        }
         self.inner.metrics_cache.lock().unwrap().remove(service_id);
         if self
             .inner
@@ -442,6 +464,7 @@ impl ServiceManager {
     }
 
     async fn start_one(&self, service_id: &ServiceId) -> Result<()> {
+        let commit = self.inner.config_commit.lock().unwrap();
         let definition = self.definition(service_id)?;
         if !definition.enabled {
             bail!("服务已禁用");
@@ -468,6 +491,7 @@ impl ServiceManager {
             bail!("服务已经在运行");
         }
         let operation = self.begin_operation(service_id, OperationKind::Start)?;
+        drop(commit);
         let result = match &definition.runtime {
             RuntimeConfig::DockerContainer {
                 distribution,
@@ -489,8 +513,10 @@ impl ServiceManager {
             .lock()
             .unwrap()
             .insert(service_id.clone(), 0);
+        let commit = self.inner.config_commit.lock().unwrap();
         let definition = self.definition(service_id)?;
         let operation = self.begin_operation(service_id, OperationKind::Stop)?;
+        drop(commit);
         let result = match &definition.runtime {
             RuntimeConfig::DockerContainer {
                 distribution,
@@ -514,7 +540,10 @@ impl ServiceManager {
             ..
         } = &definition.runtime
         {
+            let commit = self.inner.config_commit.lock().unwrap();
+            let definition = self.definition(service_id)?;
             let operation = self.begin_operation(service_id, OperationKind::Restart)?;
+            drop(commit);
             let result =
                 docker::restart(distribution, container_id, definition.stop_timeout_seconds)
                     .await
@@ -620,6 +649,7 @@ impl ServiceManager {
                             Some(ProcessController::Wsl {
                                 distribution,
                                 process_group_id,
+                                ..
                             }) => {
                                 let raw = crate::process::process_group_metrics(
                                     &distribution,
@@ -710,6 +740,7 @@ impl ServiceManager {
                         timestamp: Utc::now(),
                         stream,
                         message: message.to_owned(),
+                        sequence: 0,
                     }
                 })
                 .collect());
@@ -725,18 +756,42 @@ impl ServiceManager {
                 .find(|instance| instance.service_id == *service_id)
                 .and_then(|instance| instance.unit_name.clone());
             if let Some(unit_name) = unit_name {
-                return Ok(
-                    crate::process::journal_logs(distribution, &unit_name, limit)
-                        .await?
-                        .into_iter()
-                        .map(|message| LogEvent {
-                            service_id: service_id.clone(),
-                            timestamp: Utc::now(),
-                            stream: LogStream::Stdout,
-                            message,
-                        })
-                        .collect(),
-                );
+                let local = self.inner.logs.recent(service_id, limit)?;
+                if !local.is_empty() {
+                    return Ok(local);
+                }
+                let _backfill = self.inner.log_backfill.lock().await;
+                let local = self.inner.logs.recent(service_id, limit)?;
+                if !local.is_empty() {
+                    return Ok(local);
+                }
+                let messages =
+                    crate::process::journal_logs(distribution, &unit_name, limit).await?;
+                // A concurrent log event may have populated the file while the
+                // journal query was in flight. Prefer it to avoid inserting
+                // duplicate historical records.
+                let local = self.inner.logs.recent(service_id, limit)?;
+                if !local.is_empty() {
+                    return Ok(local);
+                }
+                let _record = self.inner.log_record.lock().unwrap();
+                let local = self.inner.logs.recent(service_id, limit)?;
+                if !local.is_empty() {
+                    return Ok(local);
+                }
+                let mut events = Vec::with_capacity(messages.len());
+                for message in messages {
+                    let event = LogEvent {
+                        service_id: service_id.clone(),
+                        timestamp: Utc::now(),
+                        stream: LogStream::Stdout,
+                        message,
+                        sequence: self.next_log_sequence(),
+                    };
+                    self.inner.logs.append(&event)?;
+                    events.push(event);
+                }
+                return Ok(events);
             }
         }
         self.inner.logs.recent(service_id, limit)
@@ -753,6 +808,7 @@ impl ServiceManager {
         let process_group_id = spawned.process_group_id;
         let job_name = spawned.job_name.clone();
         let unit_name = spawned.unit_name.clone();
+        let recovery_identity = spawned.recovery_identity.clone();
         let SpawnedProcess {
             controller,
             mut monitor,
@@ -760,6 +816,11 @@ impl ServiceManager {
             stderr,
             ..
         } = spawned;
+        self.inner
+            .monitoring_lost
+            .lock()
+            .unwrap()
+            .remove(&definition.id);
         self.inner
             .controllers
             .lock()
@@ -789,6 +850,7 @@ impl ServiceManager {
             job_name,
             unit_name,
             process_started_at: Some(Utc::now()),
+            recovery_identity,
         });
         self.inner
             .started_at
@@ -833,6 +895,28 @@ impl ServiceManager {
         controller
             .stop(Duration::from_secs(definition.stop_timeout_seconds))
             .await?;
+        if self
+            .inner
+            .monitoring_lost
+            .lock()
+            .unwrap()
+            .remove(&definition.id)
+        {
+            self.inner
+                .controllers
+                .lock()
+                .unwrap()
+                .remove(&definition.id);
+            self.inner.started_at.lock().unwrap().remove(&definition.id);
+            self.inner
+                .metrics_cache
+                .lock()
+                .unwrap()
+                .remove(&definition.id);
+            self.clear_instance(&definition.id);
+            self.set_simple_state(&definition.id, ServiceState::Stopped, None);
+            return Ok(());
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while self
             .inner
@@ -907,23 +991,37 @@ impl ServiceManager {
     }
 
     fn process_exited(&self, service_id: &ServiceId, result: Result<crate::process::ProcessExit>) {
+        let exit = match result {
+            Ok(exit) => {
+                self.inner
+                    .monitoring_lost
+                    .lock()
+                    .unwrap()
+                    .remove(service_id);
+                exit
+            }
+            Err(error) => {
+                self.inner
+                    .monitoring_lost
+                    .lock()
+                    .unwrap()
+                    .insert(service_id.clone());
+                self.process_monitoring_lost(service_id, error);
+                return;
+            }
+        };
         self.inner.metrics_cache.lock().unwrap().remove(service_id);
-        self.inner.controllers.lock().unwrap().remove(service_id);
         let elapsed = self
             .inner
             .started_at
             .lock()
             .unwrap()
-            .remove(service_id)
+            .get(service_id)
             .map(|started| started.elapsed());
-        self.clear_instance(service_id);
-        let (code, error, expected) = match result {
-            Ok(exit) => (exit.code, None, exit.expected),
-            Err(error) => (None, Some(error.to_string()), false),
-        };
-        // Restart bookkeeping must happen before the statuses write lock is
-        // taken: the delayed restart task holds restart_attempts while reading
-        // statuses, so locking in the other order here would deadlock.
+        let code = exit.code;
+        let expected = exit.expected;
+        // Capture the stop intent before releasing the controller. The stop
+        // operation waits for the controller, so it cannot clear Stopping first.
         let was_stopping = self
             .inner
             .statuses
@@ -932,6 +1030,9 @@ impl ServiceManager {
             .get(service_id)
             .is_some_and(|status| status.state == ServiceState::Stopping);
         let mut retry = None;
+        // Restart bookkeeping must happen before the statuses write lock is
+        // taken: the delayed restart task holds restart_attempts while reading
+        // statuses, so locking in the other order here would deadlock.
         let restart_policy = if !was_stopping && !expected && code != Some(0) {
             self.definition(service_id)
                 .ok()
@@ -954,27 +1055,33 @@ impl ServiceManager {
                 retry = Some((*attempt, delay_seconds));
             }
         }
-        let mut statuses = self.inner.statuses.write().unwrap();
-        let Some(status) = statuses.get_mut(service_id) else {
-            return;
-        };
-        status.state = if was_stopping || expected || code == Some(0) {
-            ServiceState::Stopped
-        } else {
-            ServiceState::Failed
-        };
-        status.last_exit_code = code;
-        status.process_id = None;
-        if status.state == ServiceState::Stopped {
-            status.health = HealthState::NotConfigured;
+        {
+            let mut statuses = self.inner.statuses.write().unwrap();
+            if let Some(status) = statuses.get_mut(service_id) {
+                status.state = if was_stopping || expected || code == Some(0) {
+                    ServiceState::Stopped
+                } else {
+                    ServiceState::Failed
+                };
+                status.last_exit_code = code;
+                status.process_id = None;
+                if status.state == ServiceState::Stopped {
+                    status.health = HealthState::NotConfigured;
+                }
+                status.message = match code {
+                    Some(0) => None,
+                    Some(code) => Some(format!("服务进程异常退出，退出码 {code}")),
+                    None if was_stopping || expected => None,
+                    None => Some("无法读取服务退出状态".into()),
+                };
+                status.updated_at = Utc::now();
+            }
         }
-        status.message = error.or_else(|| match code {
-            Some(0) => None,
-            Some(code) => Some(format!("服务进程异常退出，退出码 {code}")),
-            None => Some("无法读取服务退出状态".into()),
-        });
-        status.updated_at = Utc::now();
-        drop(statuses);
+        self.clear_instance(service_id);
+        self.inner.started_at.lock().unwrap().remove(service_id);
+        // Publishing the final state before removing the controller prevents a
+        // new start from being overwritten by this instance's exit handling.
+        self.inner.controllers.lock().unwrap().remove(service_id);
         self.emit_view(service_id);
         if let Some((attempt, delay_seconds)) = retry {
             let manager = self.clone();
@@ -1017,6 +1124,19 @@ impl ServiceManager {
                 }
             });
         }
+    }
+
+    fn process_monitoring_lost(&self, service_id: &ServiceId, error: anyhow::Error) {
+        let mut statuses = self.inner.statuses.write().unwrap();
+        if let Some(status) = statuses.get_mut(service_id) {
+            status.state = ServiceState::Unknown;
+            status.message = Some(format!(
+                "无法监控服务进程，旧实例可能仍在运行：{error:#}。请重新对账或确认后停止旧实例"
+            ));
+            status.updated_at = Utc::now();
+        }
+        drop(statuses);
+        self.emit_view(service_id);
     }
 
     fn persist_instance(&self, instance: ServiceInstanceState) {
@@ -1067,7 +1187,7 @@ impl ServiceManager {
                             _ => Err(anyhow!("缺少 Windows 实例恢复信息")),
                         };
                         match recovered {
-                            Ok((process, controller)) => {
+                            Ok(Some((process, controller))) => {
                                 self.inner.controllers.lock().unwrap().insert(
                                     service_id.clone(),
                                     ProcessController::Windows(controller),
@@ -1084,6 +1204,14 @@ impl ServiceManager {
                                     });
                                     manager.process_exited(&id, result);
                                 });
+                            }
+                            Ok(None) => {
+                                self.clear_instance(&service_id);
+                                self.set_simple_state(
+                                    &service_id,
+                                    ServiceState::Stopped,
+                                    Some("daemon 停止期间旧服务进程已退出".into()),
+                                );
                             }
                             Err(error) => self.mark_recovery_unknown(&service_id, error),
                         }
@@ -1114,31 +1242,44 @@ impl ServiceManager {
                         self.mark_recovery_unknown(&service_id, anyhow!("缺少 WSL 进程组信息"));
                         continue;
                     };
-                    if crate::process::wsl_group_alive(distribution, process_group_id).await {
-                        let controller = ProcessController::Wsl {
-                            distribution: distribution.clone(),
-                            process_group_id,
-                        };
-                        self.inner
-                            .controllers
-                            .lock()
-                            .unwrap()
-                            .insert(service_id.clone(), controller);
-                        self.mark_recovered(&definition, instance.process_id);
-                        let manager = self.clone();
-                        let id = service_id.clone();
-                        let distribution = distribution.clone();
-                        tokio::spawn(async move {
-                            let mut monitor = ProcessMonitor::WslRecovered {
-                                distribution,
+                    let Some(expected_identity) = instance.recovery_identity.as_deref() else {
+                        self.mark_recovery_unknown(
+                            &service_id,
+                            anyhow!("缺少 WSL 进程组恢复身份，拒绝接管 PGID {process_group_id}"),
+                        );
+                        continue;
+                    };
+                    match crate::process::wsl_group_status(
+                        distribution,
+                        process_group_id,
+                        expected_identity,
+                    )
+                    .await
+                    {
+                        Ok(crate::process::WslGroupStatus::Matching) => {
+                            self.attach_recovered_wsl_group(
+                                &definition,
                                 process_group_id,
-                            };
-                            let result = monitor.wait().await;
-                            manager.process_exited(&id, result);
-                        });
-                    } else {
-                        self.clear_instance(&service_id);
-                        self.set_simple_state(&service_id, ServiceState::Stopped, None);
+                                expected_identity.to_owned(),
+                                instance.process_id,
+                            );
+                        }
+                        Ok(crate::process::WslGroupStatus::Missing) => {
+                            self.clear_instance(&service_id);
+                            self.set_simple_state(&service_id, ServiceState::Stopped, None);
+                        }
+                        Ok(crate::process::WslGroupStatus::Different) => {
+                            self.clear_instance(&service_id);
+                            self.set_simple_state(
+                                &service_id,
+                                ServiceState::Stopped,
+                                Some(
+                                    "旧实例已退出，原 PGID 已被其他进程复用；未接管或发送信号"
+                                        .into(),
+                                ),
+                            );
+                        }
+                        Err(error) => self.mark_recovery_unknown(&service_id, error),
                     }
                 }
                 RuntimeConfig::DockerContainer { .. } => {
@@ -1147,6 +1288,41 @@ impl ServiceManager {
                 }
             }
         }
+    }
+
+    fn attach_recovered_wsl_group(
+        &self,
+        definition: &ServiceDefinition,
+        process_group_id: u32,
+        recovery_identity: String,
+        process_id: Option<u32>,
+    ) {
+        let RuntimeConfig::WslScript { distribution, .. } = &definition.runtime else {
+            return;
+        };
+        let controller = ProcessController::Wsl {
+            distribution: distribution.clone(),
+            process_group_id,
+            recovery_identity: recovery_identity.clone(),
+        };
+        self.inner
+            .controllers
+            .lock()
+            .unwrap()
+            .insert(definition.id.clone(), controller);
+        self.mark_recovered(definition, process_id);
+        let manager = self.clone();
+        let service_id = definition.id.clone();
+        let distribution = distribution.clone();
+        tokio::spawn(async move {
+            let mut monitor = ProcessMonitor::WslRecovered {
+                distribution,
+                process_group_id,
+                recovery_identity,
+            };
+            let result = monitor.wait().await;
+            manager.process_exited(&service_id, result);
+        });
     }
 
     fn attach_recovered_process(&self, definition: &ServiceDefinition, spawned: SpawnedProcess) {
@@ -1158,6 +1334,11 @@ impl ServiceManager {
             stderr,
             ..
         } = spawned;
+        self.inner
+            .monitoring_lost
+            .lock()
+            .unwrap()
+            .remove(&definition.id);
         self.inner
             .controllers
             .lock()
@@ -1175,6 +1356,11 @@ impl ServiceManager {
     }
 
     fn mark_recovered(&self, definition: &ServiceDefinition, process_id: Option<u32>) {
+        self.inner
+            .monitoring_lost
+            .lock()
+            .unwrap()
+            .remove(&definition.id);
         self.inner
             .started_at
             .lock()
@@ -1420,16 +1606,22 @@ impl ServiceManager {
     }
 
     fn emit_log(&self, service_id: &ServiceId, stream: LogStream, message: String) {
+        let _record = self.inner.log_record.lock().unwrap();
         let event = LogEvent {
             service_id: service_id.clone(),
             timestamp: Utc::now(),
             stream,
             message,
+            sequence: self.next_log_sequence(),
         };
         if let Err(error) = self.inner.logs.append(&event) {
             tracing::warn!(%error, "写入服务日志失败");
         }
         let _ = self.inner.events.send(DaemonEvent::Log(event));
+    }
+
+    fn next_log_sequence(&self) -> u64 {
+        self.inner.log_sequence.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     fn spawn_log_reader(
@@ -1600,6 +1792,155 @@ mod tests {
 
         let _guard = manager.begin_operation(&id, OperationKind::Start).unwrap();
         assert!(manager.stop(&id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn active_operations_reject_edit_and_remove() {
+        let (manager, _directory) = test_manager();
+        let definition = ServiceDefinition::windows_script("api", "D:\\tmp", "echo hi");
+        let id = definition.id.clone();
+        manager.upsert_service(definition.clone()).unwrap();
+
+        let guard = manager.begin_operation(&id, OperationKind::Start).unwrap();
+        assert!(manager.upsert_service(definition).is_err());
+        assert!(manager.remove_service(&id).is_err());
+        assert!(manager.definition(&id).is_ok());
+        drop(guard);
+        assert!(manager.remove_service(&id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn monitoring_failure_preserves_instance_and_blocks_restart() {
+        let (manager, _directory) = test_manager();
+        let mut definition =
+            ServiceDefinition::wsl_script("api", "ubuntu", "/home/user/app", "echo hi");
+        definition.restart_policy = RestartPolicy::OnFailure {
+            max_attempts: 2,
+            delay_seconds: 0,
+        };
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+        manager.inner.controllers.lock().unwrap().insert(
+            id.clone(),
+            ProcessController::Wsl {
+                distribution: "ubuntu".into(),
+                process_group_id: 123,
+                recovery_identity: "boot:start".into(),
+            },
+        );
+        manager.persist_instance(ServiceInstanceState {
+            service_id: id.clone(),
+            instance_id: uuid::Uuid::new_v4(),
+            process_id: Some(123),
+            process_group_id: Some(123),
+            job_name: None,
+            unit_name: None,
+            process_started_at: Some(Utc::now()),
+            recovery_identity: Some("boot:start".into()),
+        });
+
+        manager.process_exited(&id, Err(anyhow::anyhow!("query failed")));
+
+        assert!(manager.inner.controllers.lock().unwrap().contains_key(&id));
+        assert_eq!(manager.inner.persisted.lock().unwrap().instances.len(), 1);
+        assert!(
+            manager
+                .inner
+                .restart_attempts
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_none()
+        );
+        assert_eq!(
+            manager
+                .inner
+                .statuses
+                .read()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .state,
+            ServiceState::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_during_manual_stop_never_schedules_restart() {
+        let (manager, _directory) = test_manager();
+        let mut definition =
+            ServiceDefinition::wsl_script("api", "ubuntu", "/home/user/app", "echo hi");
+        definition.restart_policy = RestartPolicy::OnFailure {
+            max_attempts: 2,
+            delay_seconds: 0,
+        };
+        let id = definition.id.clone();
+        manager.upsert_service(definition).unwrap();
+        let guard = manager.begin_operation(&id, OperationKind::Stop).unwrap();
+
+        manager.process_exited(
+            &id,
+            Ok(ProcessExit {
+                code: Some(1),
+                expected: false,
+            }),
+        );
+
+        assert_eq!(
+            manager
+                .inner
+                .statuses
+                .read()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .state,
+            ServiceState::Stopped
+        );
+        assert!(
+            manager
+                .inner
+                .restart_attempts
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_none()
+        );
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn emitted_logs_have_monotonic_sequences() {
+        let (manager, _directory) = test_manager();
+        let id = ServiceId::new();
+        manager.emit_log(&id, LogStream::System, "first".into());
+        manager.emit_log(&id, LogStream::Stdout, "second".into());
+
+        let logs = manager.inner.logs.recent(&id, 10).unwrap();
+        assert_eq!(logs.len(), 2);
+        assert!(logs[0].sequence > 0);
+        assert!(logs[0].sequence < logs[1].sequence);
+    }
+
+    #[tokio::test]
+    async fn log_sequence_continues_after_daemon_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_root(directory.path().to_path_buf());
+        let id = ServiceId::new();
+        LogStore::new(paths.logs_dir.clone(), 1_000_000, 3, 7)
+            .append(&LogEvent {
+                service_id: id.clone(),
+                timestamp: Utc::now(),
+                stream: LogStream::Stdout,
+                message: "before restart".into(),
+                sequence: 41,
+            })
+            .unwrap();
+        let manager = ServiceManager::new(paths).unwrap();
+        manager.emit_log(&id, LogStream::Stdout, "after restart".into());
+
+        let logs = manager.inner.logs.recent(&id, 10).unwrap();
+        assert_eq!(logs.last().unwrap().sequence, 42);
     }
 
     #[tokio::test]

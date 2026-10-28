@@ -74,6 +74,7 @@ export component AppWindow inherits Window {
     callback restart-service(id: string);
     callback refresh-discovery();
     callback save-service(config: ServiceConfig);
+    callback config-edited();
     callback create-service(kind: string);
     callback search-changed(query: string);
     callback filter-changed(filter: string);
@@ -729,18 +730,37 @@ export component AppWindow inherits Window {
                                                                         LineEdit {
                                                                             height: 34px;
                                                                             text <=> root.selected-service.name;
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                     VerticalLayout {
                                                                         width: root.config-side-width;
                                                                         spacing: 5px;
                                                                         Text { text: "运行 Shell"; color: Theme.text-secondary; font-size: Theme.font-xs; }
-                                                                        LineEdit {
+                                                                        if root.selected-service.runtime-kind == "windows": HorizontalLayout {
                                                                             height: 34px;
-                                                                            text <=> root.selected-service.shell;
-                                                                            enabled: root.selected-service.runtime-kind == "windows";
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            spacing: 4px;
+                                                                            cross-axis-alignment: center;
+                                                                            SegmentButton {
+                                                                                label: "PowerShell";
+                                                                                button-width: 88px;
+                                                                                selected: root.selected-service.shell == "PowerShell";
+                                                                                clicked => {
+                                                                                    root.selected-service.shell = "PowerShell";
+                                                                                    root.config-dirty = true;
+                                                                                    root.config-edited();
+                                                                                }
+                                                                            }
+                                                                            SegmentButton {
+                                                                                label: "CMD";
+                                                                                button-width: 48px;
+                                                                                selected: root.selected-service.shell == "CMD";
+                                                                                clicked => {
+                                                                                    root.selected-service.shell = "CMD";
+                                                                                    root.config-dirty = true;
+                                                                                    root.config-edited();
+                                                                                }
+                                                                            }
                                                                         }
                                                                     }
                                                                 }
@@ -753,7 +773,7 @@ export component AppWindow inherits Window {
                                                                         LineEdit {
                                                                             height: 34px;
                                                                             text <=> root.selected-service.working-directory;
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                     VerticalLayout {
@@ -764,7 +784,7 @@ export component AppWindow inherits Window {
                                                                             height: 34px;
                                                                             text <=> root.selected-service.distribution;
                                                                             enabled: root.selected-service.runtime-kind == "wsl";
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                 }
@@ -785,7 +805,7 @@ export component AppWindow inherits Window {
                                                                     font-family: Theme.mono-font;
                                                                     font-size: Theme.font-sm;
                                                                     wrap: no-wrap;
-                                                                    edited(_) => { root.config-dirty = true; }
+                                                                    edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                 }
                                                                 Text {
                                                                     text: "长期服务请保持前台运行，不要使用 nohup、disown 或 & 脱离管理。保存后由 daemon 校验并应用配置。";
@@ -815,7 +835,7 @@ export component AppWindow inherits Window {
                                                                             height: 34px;
                                                                             text <=> root.selected-service.health-check-kind;
                                                                             placeholder-text: "none / http / tcp";
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                     VerticalLayout {
@@ -826,7 +846,7 @@ export component AppWindow inherits Window {
                                                                             height: 34px;
                                                                             text <=> root.selected-service.health-target;
                                                                             placeholder-text: "http://127.0.0.1:8080/health 或 host:port";
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                 }
@@ -841,7 +861,7 @@ export component AppWindow inherits Window {
                                                                             minimum: 1;
                                                                             maximum: 600;
                                                                             value <=> root.selected-service.stop-timeout;
-                                                                            edited(_) => { root.config-dirty = true; }
+                                                                            edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                     VerticalLayout {
@@ -850,7 +870,7 @@ export component AppWindow inherits Window {
                                                                         Text { text: "随 daemon 自动启动"; color: Theme.text-secondary; font-size: Theme.font-xs; }
                                                                         Switch {
                                                                             checked <=> root.selected-service.auto-start;
-                                                                            toggled => { root.config-dirty = true; }
+                                                                            toggled => { root.config-dirty = true; root.config-edited(); }
                                                                         }
                                                                     }
                                                                 }
@@ -872,7 +892,7 @@ export component AppWindow inherits Window {
                                                                     font-family: Theme.mono-font;
                                                                     font-size: Theme.font-sm;
                                                                     wrap: no-wrap;
-                                                                    edited(_) => { root.config-dirty = true; }
+                                                                    edited(_) => { root.config-dirty = true; root.config-edited(); }
                                                                 }
                                                             }
                                                         }

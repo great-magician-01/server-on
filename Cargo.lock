@@ -4114,6 +4114,7 @@ dependencies = [
  "anyhow",
  "server-on-core",
  "server-on-daemon",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
