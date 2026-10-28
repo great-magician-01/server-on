@@ -4067,7 +4067,7 @@ dependencies = [
 
 [[package]]
 name = "server-on-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4079,7 +4079,7 @@ dependencies = [
 
 [[package]]
 name = "server-on-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -4090,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "server-on-daemon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4109,7 +4109,7 @@ dependencies = [
 
 [[package]]
 name = "server-on-daemon-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "server-on-core",
@@ -4121,7 +4121,7 @@ dependencies = [
 
 [[package]]
 name = "server-on-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",

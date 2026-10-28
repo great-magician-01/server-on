@@ -1,0 +1,200 @@
+name: Windows release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_call:
+    inputs:
+      tag:
+        description: Version tag to build
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build
+        required: true
+        type: string
+      publish:
+        description: Publish to GitHub Release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag and workspace versions
+        shell: pwsh
+        run: .\packaging\check-version.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build release binaries and portable archive
+        shell: pwsh
+        run: .\packaging\build-release.ps1 -ExpectedVersion $env:RELEASE_TAG.Substring(1)
+
+      - name: Compile Inno Setup installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            & choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup 安装失败。"
+            }
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) {
+            throw "找不到 ISCC.exe。"
+          }
+
+          $version = $env:RELEASE_TAG.Substring(1)
+          & $iscc "/DAppVersion=$version" "/DNumericVersion=$version.0" "packaging\server-on.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "安装程序编译失败。"
+          }
+
+      - name: Smoke test installer and uninstaller
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:RELEASE_TAG.Substring(1)
+          $installer = (Resolve-Path "dist\ServerOn-Setup-$version-windows-x64.exe").Path
+          $installDir = Join-Path $env:LOCALAPPDATA "Programs\ServerOn"
+          $dataDir = Join-Path $env:LOCALAPPDATA "ServerOn"
+          $shortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\ServerOn.lnk"
+          $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ServerOn_is1"
+          $uninstaller = Join-Path $installDir "unins000.exe"
+
+          if ((Test-Path $installDir) -or (Test-Path $dataDir)) {
+            throw "冒烟测试需要干净的 ServerOn 安装和数据目录。"
+          }
+
+          New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+          Set-Content -Path (Join-Path $dataDir "ci-sentinel.txt") -Value "preserve me"
+          try {
+            $process = Start-Process -FilePath $installer -ArgumentList @(
+              "/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+            ) -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "静默安装失败，退出码 $($process.ExitCode)。"
+            }
+
+            foreach ($name in @("server-on.exe", "server-on-daemon.exe", "server-on-cli.exe")) {
+              if (-not (Test-Path (Join-Path $installDir $name))) {
+                throw "安装后缺少 $name。"
+              }
+            }
+            if (-not (Test-Path $shortcut)) {
+              throw "安装后缺少开始菜单快捷方式。"
+            }
+            if (-not (Test-Path $uninstallKey)) {
+              throw "安装后缺少卸载注册项。"
+            }
+
+            $process = Start-Process -FilePath $uninstaller -ArgumentList @(
+              "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+            ) -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "静默卸载失败，退出码 $($process.ExitCode)。"
+            }
+
+            $deadline = [DateTime]::UtcNow.AddMinutes(1)
+            while ((Test-Path $uninstaller) -and [DateTime]::UtcNow -lt $deadline) {
+              Start-Sleep -Seconds 1
+            }
+            if (Test-Path $uninstaller) {
+              throw "卸载程序未在预期时间内完成。"
+            }
+            if (Test-Path $shortcut) {
+              throw "卸载后开始菜单快捷方式仍存在。"
+            }
+            if (Test-Path $installDir) {
+              throw "卸载后安装目录仍存在。"
+            }
+            if (Test-Path $uninstallKey) {
+              throw "卸载后卸载注册项仍存在。"
+            }
+            if (-not (Test-Path (Join-Path $dataDir "ci-sentinel.txt"))) {
+              throw "卸载删除了应保留的用户数据。"
+            }
+            Write-Host "安装和卸载冒烟测试通过，用户数据已保留。"
+          } finally {
+            if (Test-Path $uninstaller) {
+              Start-Process -FilePath $uninstaller -ArgumentList @(
+                "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+              ) -Wait | Out-Null
+            }
+            Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $artifacts = @(
+            (Resolve-Path "dist\ServerOn-Setup-$version-windows-x64.exe").Path,
+            (Resolve-Path "dist\ServerOn-windows-x64.zip").Path
+          )
+          $lines = Get-FileHash -Algorithm SHA256 -Path $artifacts | ForEach-Object {
+            "{0}  {1}" -f $_.Hash.ToLowerInvariant(), [System.IO.Path]::GetFileName($_.Path)
+          }
+          $checksumPath = Join-Path (Resolve-Path "dist").Path "ServerOn-$version-windows-x64.sha256"
+          [System.IO.File]::WriteAllLines($checksumPath, $lines, [System.Text.Encoding]::ASCII)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ServerOn-${{ env.RELEASE_TAG }}-windows-x64
+          if-no-files-found: error
+          path: |
+            dist/ServerOn-Setup-*-windows-x64.exe
+            dist/ServerOn-windows-x64.zip
+            dist/ServerOn-*-windows-x64.sha256
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ServerOn ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/ServerOn-Setup-*-windows-x64.exe
+            dist/ServerOn-windows-x64.zip
+            dist/ServerOn-*-windows-x64.sha256
+          token: ${{ secrets.GITHUB_TOKEN }}

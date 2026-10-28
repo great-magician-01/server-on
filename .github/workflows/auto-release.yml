@@ -1,0 +1,163 @@
+name: Automatic release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: automatic-release-main
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: windows-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execFileSync } = require('node:child_process');
+            const git = (...args) => execFileSync('git', args, {
+              cwd: process.env.GITHUB_WORKSPACE,
+              encoding: 'utf8',
+              maxBuffer: 10 * 1024 * 1024,
+            }).trim();
+
+            core.setOutput('tag', '');
+            git('fetch', '--tags', 'origin', 'main');
+
+            const head = git('rev-parse', 'HEAD');
+            const remoteHead = git('rev-parse', 'origin/main');
+            if (head !== remoteHead) {
+              core.notice(`main 已更新为 ${remoteHead}，由最新工作流统一处理 ${head} 中的变更。`);
+              return;
+            }
+
+            const tagPattern = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+            const allTags = git('tag', '--list', 'v*.*.*').split(/\r?\n/).filter(Boolean);
+            const releasedTags = git('tag', '--merged', 'HEAD', '--list', 'v*.*.*')
+              .split(/\r?\n/)
+              .filter(tag => tagPattern.test(tag))
+              .sort((left, right) => {
+                const a = left.slice(1).split('.').map(Number);
+                const b = right.slice(1).split('.').map(Number);
+                for (let index = 0; index < 3; index += 1) {
+                  if (a[index] !== b[index]) return a[index] - b[index];
+                }
+                return 0;
+              });
+
+            if (releasedTags.length === 0) {
+              core.warning('尚无正式版本 Tag。请先基于 main 手动创建并推送 v1.0.0。');
+              return;
+            }
+
+            const previousTag = releasedTags[releasedTags.length - 1];
+            const commits = git('rev-list', '--reverse', `${previousTag}..HEAD`)
+              .split(/\r?\n/)
+              .filter(Boolean);
+            const pullRequests = new Map();
+
+            for (const commit of commits) {
+              const associated = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: commit,
+                  per_page: 100,
+                }
+              );
+              for (const pr of associated) {
+                if (pr.merged_at && pr.base.ref === 'main') {
+                  pullRequests.set(pr.number, pr);
+                }
+              }
+
+              if (!associated.some(pr => pr.merged_at && pr.base.ref === 'main')) {
+                const message = git('show', '-s', '--format=%B', commit);
+                const merge = message.match(/^Merge pull request #(\d+)\b/m);
+                if (merge) {
+                  const { data: pr } = await github.rest.pulls.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: Number(merge[1]),
+                  });
+                  if (pr.merged_at && pr.base.ref === 'main') {
+                    pullRequests.set(pr.number, pr);
+                  }
+                }
+              }
+            }
+
+            const prs = [...pullRequests.values()].sort((a, b) => a.number - b.number);
+            for (const pr of prs) {
+              core.info(`发现未发布 PR #${pr.number}: ${pr.title}`);
+            }
+
+            const breaking = prs.filter(pr =>
+              /^(feat|fix)(\([^)]+\))?!:/.test(pr.title) || /BREAKING CHANGE/i.test(pr.title)
+            );
+            if (breaking.length > 0) {
+              core.warning(`PR #${breaking.map(pr => pr.number).join(', #')} 包含 breaking change；请手动升级主版本并打 Tag。`);
+              return;
+            }
+
+            const hasFeature = prs.some(pr => /^feat(\([^)]+\))?:\s+.+/.test(pr.title));
+            const hasFix = prs.some(pr => /^fix(\([^)]+\))?:\s+.+/.test(pr.title));
+            if (!hasFeature && !hasFix) {
+              core.info(`自 ${previousTag} 以来没有需要自动发布的 feat/fix PR。`);
+              return;
+            }
+
+            const [major, minor, patch] = previousTag.slice(1).split('.').map(Number);
+            const nextVersion = hasFeature
+              ? `${major}.${minor + 1}.0`
+              : `${major}.${minor}.${patch + 1}`;
+            const nextTag = `v${nextVersion}`;
+            if (allTags.includes(nextTag)) {
+              throw new Error(`${nextTag} 已存在，但未合并到当前 main；请检查 Tag 后继续。`);
+            }
+
+            core.setOutput('tag', nextTag);
+            core.info(`下一版本：${previousTag} -> ${nextTag} (${hasFeature ? 'minor' : 'patch'})`);
+
+      - name: Update workspace version
+        if: steps.plan.outputs.tag != ''
+        shell: pwsh
+        run: .\packaging\set-version.ps1 -Version $env:NEXT_VERSION.Substring(1)
+        env:
+          NEXT_VERSION: ${{ steps.plan.outputs.tag }}
+
+      - name: Commit and push release tag
+        if: steps.plan.outputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): ${TAG}"
+          fi
+          git tag -a "${TAG}" -m "ServerOn ${TAG}"
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/${TAG}"
+
+  release:
+    if: needs.plan.outputs.tag != ''
+    needs: plan
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}

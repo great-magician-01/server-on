@@ -1,6 +1,6 @@
 # 验证记录
 
-更新时间：2026-10-26。
+更新时间：2026-10-28。
 
 ## 自动化验证
 
@@ -102,6 +102,14 @@ cargo clippy --workspace --offline -- -D warnings
 - `packaging/install.ps1`、`uninstall.ps1`、`build-release.ps1` 已通过 PowerShell 纯语法检查。
 - 已生成 `dist/ServerOn-windows-x64.zip`，包含 GUI、daemon、CLI 和三份文档。
 - 未执行安装、卸载或登录启动项修改。
+
+### 2026-10-28 发布流水线改动
+
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` 通过，共 27 个测试通过。
+- 所有 packaging PowerShell 脚本、工作流内嵌 PowerShell、工作流 YAML 和自动发版 JavaScript 均通过本地语法检查。
+- `check-version.ps1` 已验证正常 Tag、错误 Tag 格式和 Tag/Cargo 版本不匹配；隔离副本中验证了 `set-version.ps1` 只更新 5 个 workspace 包、不更新第三方依赖，并能拒绝未同步的 Cargo.lock。
+- 因开发机 daemon 正在运行，使用独立 `CARGO_TARGET_DIR` 完成 release 构建，没有停止 daemon 或覆盖其 EXE。生成的 ZIP 包含 GUI、daemon、CLI 和三份文档，GUI ProductVersion 为 `1.0.0`。
+- 本机未安装 Inno Setup，因此未在本地编译安装程序；未执行安装、卸载、登录启动项修改、自动 Tag 或 GitHub Release。Inno 编译、临时 runner 安装/卸载冒烟和 GitHub 发布需在工作流实际运行后验证。
 
 ## 尚未作为本次验证结论的内容
 

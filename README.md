@@ -21,7 +21,7 @@ ServerOn 是一个面向 Windows 本地开发环境的原生服务管理器，�
 - 选中服务 CPU、内存、进程数、运行时长和有限历史趋势。
 - 原创 SVG 图标、光学小尺寸 PNG、多尺寸 ICO 和 Windows EXE 资源。
 
-产品目标是完整、可长期使用的桌面管理工具。安装和便携包脚本已提供，自动更新、配置导入导出和长期稳定性验证仍在继续完善，当前文档不把已完成的核心链路描述为全部产品工作已经结束。
+产品目标是完整、可长期使用的桌面管理工具。Windows 安装程序、便携包脚本和 Tag 发布流水线已提供，自动更新、配置导入导出和长期稳定性验证仍在继续完善，当前文档不把已完成的核心链路描述为全部产品工作已经结束。
 
 ## 环境要求
 
@@ -189,20 +189,22 @@ docker restart --time <seconds> <container-id>
 
 ## 发布与安装
 
-提供当前用户安装、开始菜单快捷方式、可选登录启动、卸载和便携包脚本，详见 `packaging/README.md`。
+GitHub Release 提供当前用户安装的 Windows EXE 安装程序和便携 ZIP，均包含 GUI、daemon、CLI 和文档。安装程序无需管理员权限，支持开始菜单快捷方式、可选登录启动和卸载；默认保留配置与日志。完整使用和发布说明见 `packaging/README.md`。
 
 ```powershell
-# 生成 release 便携包
+# 本地生成 release 便携包
 .\packaging\build-release.ps1
 
-# 安装到当前用户目录并创建开始菜单快捷方式
+# 或使用脚本安装本地构建结果
 .\packaging\install.ps1
 
 # 可选：允许当前用户登录时启动 daemon
 .\packaging\install.ps1 -StartOnLogin
 ```
 
-安装和卸载脚本不会在开发过程中自动执行；卸载默认保留配置和日志。
+PR 只运行检查；合并 `main` 后，`fix:` 标题自动升级 Patch，`feat:` 标题自动升级 Minor。发布使用 `vX.Y.Z` Tag，并自动构建安装 EXE、便携 ZIP 和校验文件。首个 `v1.0.0` 由维护者手动创建。
+
+安装和卸载脚本不会在开发过程中自动执行；卸载默认保留配置和日志。安装程序尚未签名，Windows SmartScreen 可能显示提示。
 
 ## 代码结构
 
