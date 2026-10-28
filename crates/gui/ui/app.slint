@@ -35,6 +35,7 @@ export component AppWindow inherits Window {
     in-out property <string> active-filter: "all";
     in-out property <string> search-text: "";
     in-out property <int> visible-service-count: 0;
+    in-out property <int> service-count: 0;
     in-out property <int> running-count: 0;
     in-out property <int> issue-count: 0;
     in-out property <int> stopped-count: 0;
@@ -84,13 +85,6 @@ export component AppWindow inherits Window {
     callback log-stream-changed(stream: string);
     callback dismiss-toast();
 
-    function service-visible(state: string, matches-search: bool) -> bool {
-        if !matches-search { return false; }
-        if root.active-filter == "running" { return state == "running" || state == "degraded" || state == "starting" || state == "stopping"; }
-        if root.active-filter == "issues" { return state == "failed" || state == "degraded" || state == "unknown" || state == "missing"; }
-        if root.active-filter == "stopped" { return state == "stopped"; }
-        return true;
-    }
     function select-filter(filter: string) {
         root.active-filter = filter;
         root.filter-changed(filter);
@@ -241,7 +235,7 @@ export component AppWindow inherits Window {
                         spacing: 6px;
                         Text { text: "工作台"; color: Theme.text-muted; font-size: Theme.font-xs; font-weight: 600; }
                         for item in [
-                            {label: "全部服务", filter: "all", count: root.services.length, glyph: "grid"},
+                            {label: "全部服务", filter: "all", count: root.service-count, glyph: "grid"},
                             {label: "运行中", filter: "running", count: root.running-count, glyph: "play"},
                             {label: "需要关注", filter: "issues", count: root.issue-count, glyph: "warning"},
                             {label: "已停止", filter: "stopped", count: root.stopped-count, glyph: "stop"},
@@ -363,7 +357,7 @@ export component AppWindow inherits Window {
                                         font-weight: 500;
                                     }
                                     Text {
-                                        text: root.services.length + " 个服务 · " + root.running-count + " 个运行中 · " + root.issue-count + " 个需要关注";
+                                        text: root.service-count + " 个服务 · " + root.running-count + " 个运行中 · " + root.issue-count + " 个需要关注";
                                         color: Theme.text-muted;
                                         font-size: Theme.font-xs;
                                         min-width: 0px;
@@ -401,7 +395,6 @@ export component AppWindow inherits Window {
                                                 padding: 7px;
                                                 spacing: 4px;
                                                 for svc in root.services: ServiceRow {
-                                                    visible: root.service-visible(svc.state, svc.matches-search);
                                                     item: svc;
                                                     selected: root.selected-service-id == svc.id;
                                                     height: root.dense ? 58px : 62px;
@@ -410,8 +403,8 @@ export component AppWindow inherits Window {
                                                 if root.visible-service-count == 0: EmptyState {
                                                     height: 180px;
                                                     glyph: "grid";
-                                                    title: root.services.length == 0 ? "还没有服务" : "没有匹配的服务";
-                                                    detail: root.services.length == 0 ? "新建 Windows / WSL 服务，或刷新自动发现已有容器。" : "调整搜索或筛选条件后再试。";
+                                                    title: root.service-count == 0 ? "还没有服务" : "没有匹配的服务";
+                                                    detail: root.service-count == 0 ? "新建 Windows / WSL 服务，或刷新自动发现已有容器。" : "调整搜索或筛选条件后再试。";
                                                 }
                                             }
                                         }

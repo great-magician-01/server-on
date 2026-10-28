@@ -846,10 +846,8 @@ fn render_services(
         .collect();
     services.sort_by_key(|service| service.name.to_lowercase());
     let active_filter = window.get_active_filter().to_string();
-    let visible_service_count = services
-        .iter()
-        .filter(|item| item.matches_search && filter_matches(&item.state, &active_filter))
-        .count() as i32;
+    retain_visible_services(&mut services, &active_filter);
+    let visible_service_count = services.len() as i32;
     let running_count = snapshot
         .services
         .iter()
@@ -930,6 +928,7 @@ fn render_services(
         .sum();
     window.set_services(ModelRc::new(VecModel::from(services)));
     window.set_distributions(ModelRc::new(VecModel::from(distributions)));
+    window.set_service_count(snapshot.services.len() as i32);
     window.set_running_count(running_count);
     window.set_issue_count(issue_count);
     window.set_stopped_count(stopped_count);
@@ -1297,6 +1296,10 @@ fn update_tray(tray: &Weak<AppTray>, snapshot: &DaemonSnapshot) {
     }
 }
 
+fn retain_visible_services(services: &mut Vec<ServiceItem>, active_filter: &str) {
+    services.retain(|item| item.matches_search && filter_matches(&item.state, active_filter));
+}
+
 fn filter_matches(state: &str, filter: &str) -> bool {
     match filter {
         "running" => matches!(state, "running" | "degraded" | "starting" | "stopping"),
@@ -1336,5 +1339,36 @@ fn engine_name(state: DockerEngineState) -> &'static str {
         DockerEngineState::PermissionDenied => "permission-denied",
         DockerEngineState::NotScanned => "not-scanned",
         DockerEngineState::Unknown => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service(name: &str, state: &str) -> ServiceItem {
+        ServiceItem {
+            name: name.into(),
+            state: state.into(),
+            matches_search: true,
+            ..ServiceItem::default()
+        }
+    }
+
+    #[test]
+    fn running_filter_removes_stopped_rows_between_visible_services() {
+        let mut services = vec![
+            service("any-llm", "running"),
+            service("middle-stopped", "stopped"),
+            service("postgres", "running"),
+        ];
+
+        retain_visible_services(&mut services, "running");
+
+        let names: Vec<_> = services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect();
+        assert_eq!(names, ["any-llm", "postgres"]);
     }
 }
