@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use anyhow::Result;
 use server_on_core::paths::AppPaths;
 use server_on_daemon::ipc::serve;

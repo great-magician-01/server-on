@@ -1,4 +1,4 @@
-import { Button, LineEdit, ScrollView, SpinBox, Switch, TextEdit, Palette } from "std-widgets.slint";
+import { Button, LineEdit, ListView, ScrollView, SpinBox, Switch, TextEdit, Palette } from "std-widgets.slint";
 import { Theme, Ui } from "theme.slint";
 import { ServiceItem, DistributionItem, LogLine, ServiceConfig, MetricPoint } from "models.slint";
 import { StatusDot, AppIcon, IconButton, NavItem, SegmentButton, TextButton, EmptyState, MetricTile, ServiceRow, LogRow, Toast } from "components.slint";
@@ -20,6 +20,10 @@ export component AppWindow inherits Window {
     in-out property <[ServiceItem]> services: [];
     in-out property <[DistributionItem]> distributions: [];
     in-out property <[LogLine]> logs: [];
+    in-out property <[LogLine]> recent-logs: [];
+    in-out property <int> log-count: 0;
+    in-out property <int> log-generation: 0;
+    in-out property <int> log-epoch: 0;
     in-out property <ServiceConfig> selected-service: {
         id: "", name: "未选择服务", runtime-kind: "", type-label: "", origin-label: "",
         state: "unknown", health: "not-configured", detail: "", status-message: "",
@@ -59,7 +63,6 @@ export component AppWindow inherits Window {
     in-out property <bool> log-follow: true;
     in-out property <string> log-filter: "";
     in-out property <string> log-stream-filter: "all";
-    in-out property <length> log-content-y: 0px;
     in-out property <string> toast-text: "";
     in-out property <string> toast-kind: "info";
     in-out property <bool> toast-visible: false;
@@ -108,10 +111,6 @@ export component AppWindow inherits Window {
     function set-log-stream(stream: string) {
         root.log-stream-filter = stream;
         root.log-stream-changed(stream);
-    }
-    function log-visible(line: LogLine) -> bool {
-        if root.log-stream-filter != "all" && line.level != root.log-stream-filter { return false; }
-        return root.log-filter == "" || line.matches-filter;
     }
     function update-layout-metrics() {
         root.compact = root.width > 0px && root.width < 1240px;
@@ -383,7 +382,6 @@ export component AppWindow inherits Window {
                                     background: Theme.panel;
                                     border-width: 1px;
                                     border-color: Theme.border-soft;
-                                    clip: true;
                                     VerticalLayout {
                                         Rectangle {
                                             height: 48px;
@@ -427,7 +425,6 @@ export component AppWindow inherits Window {
                                     background: Theme.panel;
                                     border-width: 1px;
                                     border-color: Theme.border-soft;
-                                    clip: true;
                                     VerticalLayout {
                                         Rectangle {
                                             height: root.detail-header-height;
@@ -549,7 +546,6 @@ export component AppWindow inherits Window {
                                                     background: Theme.panel-raised;
                                                     border-width: 1px;
                                                     border-color: Theme.border-soft;
-                                                    clip: true;
                                                     HorizontalLayout {
                                                         spacing: 0px;
                                                         cross-axis-alignment: center;
@@ -673,12 +669,12 @@ export component AppWindow inherits Window {
                                                         VerticalLayout {
                                                             padding: 12px;
                                                             spacing: 7px;
-                                                            for line in root.logs: LogRow { visible: root.log-visible(line); line: line; }
-                                                            if root.logs.length == 0: EmptyState {
+                                                            for line in root.recent-logs: LogRow { line: line; }
+                                                            if root.recent-logs.length == 0: EmptyState {
                                                                 height: 116px;
                                                                 glyph: "terminal";
-                                                                title: "暂无日志";
-                                                                detail: "启动服务后，输出会显示在这里。";
+                                                                title: root.log-count == 0 ? "暂无日志" : "没有匹配的日志";
+                                                                detail: root.log-count == 0 ? "启动服务后，输出会显示在这里。" : "调整日志筛选条件后再试。";
                                                             }
                                                         }
                                                     }
@@ -977,11 +973,14 @@ export component AppWindow inherits Window {
                                                             selected: root.log-follow;
                                                             clicked => {
                                                                 root.log-follow = !root.log-follow;
+                                                                if root.log-follow {
+                                                                    logs-list.content-y = -100000px;
+                                                                }
                                                                 root.log-follow-toggled(root.log-follow);
                                                             }
                                                         }
                                                         Rectangle { horizontal-stretch: 1; }
-                                                        Text { text: root.logs.length + " 条"; color: Theme.text-muted; font-size: Theme.font-xs; }
+                                                        Text { text: root.log-count + " 条"; color: Theme.text-muted; font-size: Theme.font-xs; }
                                                     }
                                                 }
                                             }
@@ -989,25 +988,39 @@ export component AppWindow inherits Window {
                                             Rectangle {
                                                 vertical-stretch: 1;
                                                 background: Theme.log-bg;
-                                                ScrollView {
+                                                logs-list := ListView {
                                                     x: 0px;
                                                     y: 0px;
                                                     width: parent.width;
                                                     height: parent.height;
                                                     horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                                                    content-y: root.log-follow ? -100000px : root.log-content-y;
-                                                    changed content-y => { root.log-content-y = self.content-y; }
-                                                    VerticalLayout {
-                                                        padding: 12px;
-                                                        spacing: 7px;
-                                                        for line in root.logs: LogRow { visible: root.log-visible(line); line: line; }
-                                                        if root.logs.length == 0: EmptyState {
-                                                            height: 170px;
-                                                            glyph: "terminal";
-                                                            title: "暂无日志";
-                                                            detail: "服务输出、系统事件和错误信息会集中显示在这里。";
+                                                    init => {
+                                                        if root.log-follow {
+                                                            self.content-y = -100000px;
                                                         }
                                                     }
+                                                    property <int> generation: root.log-generation;
+                                                    changed generation => {
+                                                        if root.log-follow {
+                                                            self.content-y = -100000px;
+                                                        }
+                                                    }
+                                                    for line in root.logs: LogRow {
+                                                        width: parent.width;
+                                                        padding-left: 12px;
+                                                        padding-right: 12px;
+                                                        padding-top: 3px;
+                                                        padding-bottom: 4px;
+                                                        line: line;
+                                                    }
+                                                }
+                                                if root.logs.length == 0: EmptyState {
+                                                    y: (parent.height - self.height) / 2;
+                                                    width: parent.width;
+                                                    height: 170px;
+                                                    glyph: "terminal";
+                                                    title: root.log-count == 0 ? "暂无日志" : "没有匹配的日志";
+                                                    detail: root.log-count == 0 ? "服务输出、系统事件和错误信息会集中显示在这里。" : "调整日志筛选条件后再试。";
                                                 }
                                             }
                                             Rectangle {

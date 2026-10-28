@@ -242,42 +242,54 @@ impl ServiceManager {
                     container.compose_project.clone(),
                     container.compose_service.clone(),
                 );
-                if let Some(existing) = config
+                let definition_changed = match config
                     .services
                     .iter()
                     .find(|service| service.id == definition.id)
                 {
-                    definition.enabled = existing.enabled;
-                    definition.auto_start = existing.auto_start;
-                    definition.stop_timeout_seconds = existing.stop_timeout_seconds;
-                    definition.restart_policy = existing.restart_policy.clone();
-                    definition.health_check = existing.health_check.clone();
-                    definition.depends_on = existing.depends_on.clone();
-                }
+                    Some(existing) => {
+                        definition.enabled = existing.enabled;
+                        definition.auto_start = existing.auto_start;
+                        definition.stop_timeout_seconds = existing.stop_timeout_seconds;
+                        definition.restart_policy = existing.restart_policy.clone();
+                        definition.health_check = existing.health_check.clone();
+                        definition.depends_on = existing.depends_on.clone();
+                        existing != &definition
+                    }
+                    None => true,
+                };
                 let id = definition.id.clone();
                 discovered_ids.insert(id.clone());
-                affected.insert(id.clone());
+                if definition_changed {
+                    affected.insert(id.clone());
+                }
                 if let Some(existing) = config.services.iter_mut().find(|service| service.id == id)
                 {
-                    *existing = definition;
+                    if definition_changed {
+                        *existing = definition;
+                    }
                 } else {
                     config.services.push(definition);
                 }
                 let (state, health, message) = docker::container_status(container);
-                let mut status = statuses
-                    .get(&id)
-                    .cloned()
+                let previous_status = statuses.get(&id).cloned();
+                let mut status = previous_status
+                    .clone()
                     .unwrap_or_else(|| ServiceStatus::new(id.clone()));
                 status.container_id = Some(container.id.clone());
-                if status.active_operation.is_some() {
-                    statuses.insert(id, status);
-                    continue;
+                if status.active_operation.is_none() {
+                    status.state = state;
+                    status.health = health;
+                    status.message = message;
                 }
-                status.state = state;
-                status.health = health;
-                status.message = message;
-                status.updated_at = Utc::now();
-                statuses.insert(id, status);
+                if previous_status
+                    .as_ref()
+                    .is_none_or(|previous| status_changed(previous, &status))
+                {
+                    status.updated_at = Utc::now();
+                    statuses.insert(id.clone(), status);
+                    affected.insert(id);
+                }
             }
         }
 
@@ -313,13 +325,20 @@ impl ServiceManager {
                 ),
                 None => (ServiceState::Unknown, "WSL 发行版未找到".to_owned()),
             };
-            let status = statuses
-                .entry(definition.id.clone())
-                .or_insert_with(|| ServiceStatus::new(definition.id.clone()));
+            let previous_status = statuses.get(&definition.id).cloned();
+            let mut status = previous_status
+                .clone()
+                .unwrap_or_else(|| ServiceStatus::new(definition.id.clone()));
             status.state = state;
             status.message = Some(message);
-            status.updated_at = Utc::now();
-            affected.insert(definition.id.clone());
+            if previous_status
+                .as_ref()
+                .is_none_or(|previous| status_changed(previous, &status))
+            {
+                status.updated_at = Utc::now();
+                statuses.insert(definition.id.clone(), status);
+                affected.insert(definition.id.clone());
+            }
         }
         drop(statuses);
         if config != original_config {
@@ -1462,6 +1481,17 @@ impl Drop for OperationGuard {
     }
 }
 
+fn status_changed(before: &ServiceStatus, after: &ServiceStatus) -> bool {
+    before.service_id != after.service_id
+        || before.state != after.state
+        || before.health != after.health
+        || before.message != after.message
+        || before.process_id != after.process_id
+        || before.container_id != after.container_id
+        || before.last_exit_code != after.last_exit_code
+        || before.active_operation != after.active_operation
+}
+
 fn emit_view_inner(inner: &Arc<ManagerInner>, service_id: &ServiceId) {
     let definition = inner
         .config
@@ -1492,6 +1522,52 @@ mod tests {
         let manager =
             ServiceManager::new(AppPaths::from_root(directory.path().to_path_buf())).unwrap();
         (manager, directory)
+    }
+
+    #[test]
+    fn discovery_status_comparison_ignores_only_timestamp() {
+        let before = ServiceStatus::new(ServiceId::from_string("service:test"));
+        let mut after = before.clone();
+        after.updated_at += chrono::Duration::seconds(15);
+        assert!(!status_changed(&before, &after));
+
+        let changes = [
+            ServiceStatus {
+                service_id: ServiceId::from_string("service:other"),
+                ..before.clone()
+            },
+            ServiceStatus {
+                state: ServiceState::Running,
+                ..before.clone()
+            },
+            ServiceStatus {
+                health: HealthState::Healthy,
+                ..before.clone()
+            },
+            ServiceStatus {
+                message: Some("changed".into()),
+                ..before.clone()
+            },
+            ServiceStatus {
+                process_id: Some(42),
+                ..before.clone()
+            },
+            ServiceStatus {
+                container_id: Some("container".into()),
+                ..before.clone()
+            },
+            ServiceStatus {
+                last_exit_code: Some(1),
+                ..before.clone()
+            },
+            ServiceStatus {
+                active_operation: Some(OperationKind::Start),
+                ..before.clone()
+            },
+        ];
+        for changed in changes {
+            assert!(status_changed(&before, &changed));
+        }
     }
 
     #[tokio::test]

@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 use server_on_core::config::{
@@ -5,17 +7,20 @@ use server_on_core::config::{
     ThemePreference, WindowsShell,
 };
 use server_on_core::discovery::{ContainerInfo, DiscoverySnapshot, DockerEngineState};
-use server_on_core::event::{DaemonEvent, LogEvent, LogStream};
+use server_on_core::event::{DaemonEvent, LogEvent};
 use server_on_core::protocol::{Command, ResponseData};
 use server_on_core::state::{DaemonSnapshot, HealthState, ServiceState, ServiceView};
 use server_on_daemon::ipc::DaemonClient;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak, invoke_from_event_loop};
+use slint::{
+    ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak, invoke_from_event_loop,
+};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::runtime::Handle;
 
+mod logs;
 mod metrics;
 mod single_instance;
 
@@ -26,7 +31,7 @@ slint::include_modules!();
 struct SharedState {
     snapshot: DaemonSnapshot,
     selected_id: String,
-    logs: Vec<LogEvent>,
+    logs: logs::LogBuffer,
     metrics: Option<server_on_core::metrics::ServiceMetrics>,
     cpu_history: Vec<f32>,
     memory_history: Vec<f64>,
@@ -43,7 +48,7 @@ impl SharedState {
                 discovered_at: None,
             },
             selected_id: String::new(),
-            logs: Vec::new(),
+            logs: logs::LogBuffer::default(),
             metrics: None,
             cpu_history: Vec::new(),
             memory_history: Vec::new(),
@@ -98,6 +103,7 @@ impl AppContext {
         let window = self.window.clone();
         let tray = self.tray.clone();
         let shared = self.shared.clone();
+        let context = self.clone();
         let _ = invoke_from_event_loop(move || {
             if let Some(window) = window.upgrade() {
                 let (preferred, draft) = {
@@ -105,8 +111,18 @@ impl AppContext {
                     (shared.selected_id.clone(), shared.draft)
                 };
                 let selected = render_services(&window, &snapshot, &preferred, draft);
+                let selection_changed = selected != preferred;
                 shared.lock().unwrap().selected_id = selected;
                 update_tray(&tray, &snapshot);
+                if selection_changed {
+                    context.clear_logs();
+                    let load_context = context.clone();
+                    context.spawn(async move {
+                        if let Err(error) = load_selected_logs(load_context.clone()).await {
+                            load_context.set_connection(true, format!("读取日志失败：{error:#}"));
+                        }
+                    });
+                }
             }
         });
     }
@@ -147,27 +163,70 @@ impl AppContext {
         });
     }
 
-    fn set_logs_async(&self) {
-        let (logs, selected) = {
+    fn render_logs_replace_async(&self) {
+        let (selected, epoch) = {
             let shared = self.shared.lock().unwrap();
-            (shared.logs.clone(), shared.selected_id.clone())
+            (shared.selected_id.clone(), shared.logs.epoch())
         };
         let window = self.window.clone();
+        let shared = self.shared.clone();
         let _ = invoke_from_event_loop(move || {
-            if let Some(window) = window.upgrade()
-                && window.get_selected_service_id() == selected
-            {
-                let filter = window.get_log_filter();
-                window.set_logs(log_model(&logs, &filter));
+            if let Some(window) = window.upgrade() {
+                replace_logs_from_shared(&window, &shared, &selected, epoch);
             }
+        });
+    }
+
+    fn reset_log_view(&self) {
+        self.shared.lock().unwrap().logs.invalidate();
+        self.render_logs_replace_async();
+    }
+
+    fn flush_logs_async(&self) {
+        let (selected, delta) = {
+            let mut shared = self.shared.lock().unwrap();
+            (shared.selected_id.clone(), shared.logs.take_delta())
+        };
+        let Some(delta) = delta else {
+            return;
+        };
+        let window = self.window.clone();
+        let shared = self.shared.clone();
+        let _ = invoke_from_event_loop(move || {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let (total, replace) = {
+                let shared = shared.lock().unwrap();
+                if shared.selected_id != selected
+                    || shared.logs.epoch() != delta.epoch
+                    || window.get_selected_service_id() != selected
+                    || window.get_log_epoch() != delta.epoch
+                {
+                    return;
+                }
+                let replace = delta.pending.len() + delta.evicted.len() > 512;
+                (shared.logs.len(), replace)
+            };
+            if replace {
+                replace_logs_from_shared(&window, &shared, &selected, delta.epoch);
+                return;
+            }
+            if append_log_delta(&window, &delta) {
+                window.set_log_count(total as i32);
+                bump_log_generation(&window);
+                return;
+            }
+
+            // A large eviction or an out-of-sync model is cheaper and safer to
+            // replace once than to repair row by row.
+            replace_logs_from_shared(&window, &shared, &selected, delta.epoch);
         });
     }
 
     fn clear_logs(&self) {
         self.shared.lock().unwrap().logs.clear();
-        if let Some(window) = self.window.upgrade() {
-            window.set_logs(ModelRc::new(VecModel::from(Vec::<LogLine>::new())));
-        }
+        self.render_logs_replace_async();
     }
 }
 
@@ -177,6 +236,8 @@ fn main() -> Result<()> {
     };
     let runtime = tokio::runtime::Runtime::new()?;
     let window = AppWindow::new()?;
+    window.set_logs(ModelRc::new(VecModel::from(Vec::<LogLine>::new())));
+    window.set_recent_logs(ModelRc::new(VecModel::from(Vec::<LogLine>::new())));
     let tray = AppTray::new()?;
     tray.show()?;
     instance.watch_activation(window.as_weak());
@@ -242,9 +303,9 @@ fn main() -> Result<()> {
             {
                 let mut shared = context.shared.lock().unwrap();
                 shared.selected_id = id;
-                shared.logs.clear();
                 shared.draft = false;
             }
+            context.clear_logs();
             crate::metrics::reset(context.clone());
             context.render_now();
             let context = context.clone();
@@ -336,15 +397,14 @@ fn main() -> Result<()> {
             {
                 let mut shared = context.shared.lock().unwrap();
                 shared.selected_id.clear();
-                shared.logs.clear();
                 shared.draft = true;
             }
+            context.clear_logs();
             crate::metrics::reset(context.clone());
             window.set_selected_service_id("".into());
             window.set_selected_service(config);
             window.set_config_dirty(true);
             window.set_config_saving(false);
-            window.set_logs(ModelRc::new(VecModel::from(Vec::<LogLine>::new())));
         }
     });
     window.on_save_service({
@@ -357,6 +417,14 @@ fn main() -> Result<()> {
                     Ok(()) => {
                         context.set_config_saved(true);
                         context.set_connection(true, "配置已保存".into());
+                        // Renders triggered while the save was in flight still
+                        // saw config-dirty set, so they kept the draft in
+                        // selected-service. For a newly created service that
+                        // draft has an empty id, and the header buttons would
+                        // send an empty id to the daemon. Re-render after the
+                        // dirty flag is cleared so the panel binds to the
+                        // persisted service.
+                        context.render_shared_async();
                     }
                     Err(error) => {
                         context.set_config_saved(false);
@@ -376,7 +444,7 @@ fn main() -> Result<()> {
     });
     window.on_log_filter_changed({
         let context = context.clone();
-        move |_| context.set_logs_async()
+        move |_| context.reset_log_view()
     });
     window.on_toggle_theme({
         let context = context.clone();
@@ -406,7 +474,10 @@ fn main() -> Result<()> {
     });
     window.on_tab_changed(|_| {});
     window.on_log_follow_toggled(|_| {});
-    window.on_log_stream_changed(|_| {});
+    window.on_log_stream_changed({
+        let context = context.clone();
+        move |_| context.reset_log_view()
+    });
     window.on_dismiss_toast(|| {});
     window.on_clear_logs({
         let context = context.clone();
@@ -526,10 +597,12 @@ async fn load_preferences(context: AppContext) -> Result<()> {
 }
 
 async fn load_selected_logs(context: AppContext) -> Result<()> {
-    let service_id = context.shared.lock().unwrap().selected_id.clone();
+    let (service_id, load_seq) = {
+        let mut shared = context.shared.lock().unwrap();
+        (shared.selected_id.clone(), shared.logs.begin_load())
+    };
     if service_id.is_empty() {
-        context.shared.lock().unwrap().logs.clear();
-        context.set_logs_async();
+        context.clear_logs();
         return Ok(());
     }
     let service_id = ServiceId::from_string(service_id);
@@ -543,9 +616,18 @@ async fn load_selected_logs(context: AppContext) -> Result<()> {
     let ResponseData::Logs(logs) = response else {
         bail!("守护进程返回了无效日志");
     };
-    if context.shared.lock().unwrap().selected_id == service_id.as_str() {
-        context.shared.lock().unwrap().logs = logs;
-        context.set_logs_async();
+    let loaded = {
+        let mut shared = context.shared.lock().unwrap();
+        if shared.selected_id == service_id.as_str() && shared.logs.load_should_apply(load_seq) {
+            shared.logs.replace(logs);
+            shared.logs.complete_load(load_seq);
+            true
+        } else {
+            false
+        }
+    };
+    if loaded {
+        context.render_logs_replace_async();
     }
     Ok(())
 }
@@ -562,24 +644,22 @@ async fn watch_events(context: AppContext) {
             return;
         }
     };
-    // Log lines arrive in bursts; rebuild the Slint model at most every 200ms
-    // instead of once per line.
+    // Batch log deltas and service changes independently so neither event
+    // stream can rebuild the UI once per daemon event.
     let mut log_flush = tokio::time::interval(Duration::from_millis(200));
     log_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut service_flush = tokio::time::interval(Duration::from_millis(150));
+    service_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut logs_dirty = false;
+    let mut services_dirty = false;
     loop {
         tokio::select! {
             event = events.recv() => {
                 match event {
                     Ok(DaemonEvent::Log(log)) => {
-                        let selected = context.shared.lock().unwrap().selected_id.clone();
-                        if selected == log.service_id.as_str() {
-                            let mut shared = context.shared.lock().unwrap();
+                        let mut shared = context.shared.lock().unwrap();
+                        if shared.selected_id == log.service_id.as_str() {
                             shared.logs.push(log);
-                            if shared.logs.len() > 2_000 {
-                                let excess = shared.logs.len() - 2_000;
-                                shared.logs.drain(..excess);
-                            }
                             drop(shared);
                             logs_dirty = true;
                         }
@@ -597,7 +677,7 @@ async fn watch_events(context: AppContext) {
                             shared.snapshot.services.push(*view);
                         }
                         drop(shared);
-                        context.render_shared_async();
+                        services_dirty = true;
                     }
                     Ok(DaemonEvent::ServiceRemoved(service_id)) => {
                         context
@@ -607,11 +687,13 @@ async fn watch_events(context: AppContext) {
                             .snapshot
                             .services
                             .retain(|service| service.definition.id != service_id);
-                        context.render_shared_async();
+                        services_dirty = true;
                     }
                     Ok(DaemonEvent::OperationCompleted { .. })
                     | Ok(DaemonEvent::DiscoveryCompleted { .. }) => {
-                        let _ = refresh_snapshot(context.clone()).await;
+                        if refresh_snapshot(context.clone()).await.is_ok() {
+                            services_dirty = false;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -623,7 +705,13 @@ async fn watch_events(context: AppContext) {
             _ = log_flush.tick() => {
                 if logs_dirty {
                     logs_dirty = false;
-                    context.set_logs_async();
+                    context.flush_logs_async();
+                }
+            }
+            _ = service_flush.tick() => {
+                if services_dirty {
+                    services_dirty = false;
+                    context.render_shared_async();
                 }
             }
         }
@@ -1093,28 +1181,91 @@ fn environment_string(environment: &BTreeMap<String, String>) -> String {
         .join("\n")
 }
 
-fn log_model(logs: &[LogEvent], filter: &str) -> ModelRc<LogLine> {
-    let filter = filter.to_lowercase();
-    ModelRc::new(VecModel::from(
-        logs.iter()
-            .map(|log| LogLine {
-                time: log
-                    .timestamp
-                    .with_timezone(&Local)
-                    .format("%H:%M:%S")
-                    .to_string()
-                    .into(),
-                level: match log.stream {
-                    LogStream::Stdout => "stdout",
-                    LogStream::Stderr => "stderr",
-                    LogStream::System => "system",
-                }
-                .into(),
-                message: log.message.clone().into(),
-                matches_filter: filter.is_empty() || log.message.to_lowercase().contains(&filter),
-            })
-            .collect::<Vec<_>>(),
-    ))
+fn replace_logs_from_shared(
+    window: &AppWindow,
+    shared: &Arc<Mutex<SharedState>>,
+    selected: &str,
+    expected_epoch: i32,
+) {
+    let (logs, epoch) = {
+        let mut shared = shared.lock().unwrap();
+        if shared.selected_id != selected || shared.logs.epoch() != expected_epoch {
+            return;
+        }
+        // This snapshot includes pending events. Consume their deltas and
+        // invalidate already queued appends so no line is rendered twice.
+        let epoch = shared.logs.invalidate();
+        (shared.logs.logs().to_vec(), epoch)
+    };
+    replace_log_models(window, &logs, epoch);
+}
+
+fn replace_log_models(window: &AppWindow, logs: &[LogEvent], epoch: i32) {
+    let filter = window.get_log_filter().to_string().to_lowercase();
+    let stream = window.get_log_stream_filter();
+    let lines = logs::filtered_lines(logs, &filter, stream.as_str());
+    let recent = logs::recent_tail(&lines);
+
+    let logs_model = window.get_logs();
+    let Some(logs_model) = logs_model.as_any().downcast_ref::<VecModel<LogLine>>() else {
+        return;
+    };
+    logs_model.set_vec(lines);
+    let recent_model = window.get_recent_logs();
+    let Some(recent_model) = recent_model.as_any().downcast_ref::<VecModel<LogLine>>() else {
+        return;
+    };
+    recent_model.set_vec(recent);
+    window.set_log_count(logs.len() as i32);
+    window.set_log_epoch(epoch);
+    bump_log_generation(window);
+}
+
+fn append_log_delta(window: &AppWindow, delta: &logs::LogDelta) -> bool {
+    let filter = window.get_log_filter().to_string().to_lowercase();
+    let stream = window.get_log_stream_filter();
+    let removed = delta
+        .evicted
+        .iter()
+        .filter(|log| logs::matches(log, &filter, stream.as_str()))
+        .count();
+    if removed > 64 {
+        return false;
+    }
+    let appended = logs::filtered_lines(&delta.pending, &filter, stream.as_str());
+    let logs_model = window.get_logs();
+    let Some(logs_model) = logs_model.as_any().downcast_ref::<VecModel<LogLine>>() else {
+        return false;
+    };
+    if logs_model.row_count() + appended.len() < removed {
+        return false;
+    }
+    logs_model.extend(appended);
+    for _ in 0..removed {
+        logs_model.remove(0);
+    }
+    update_recent_logs(window)
+}
+
+fn update_recent_logs(window: &AppWindow) -> bool {
+    let logs_model = window.get_logs();
+    let Some(logs_model) = logs_model.as_any().downcast_ref::<VecModel<LogLine>>() else {
+        return false;
+    };
+    let start = logs_model.row_count().saturating_sub(logs::RECENT_CAP);
+    let recent = (start..logs_model.row_count())
+        .filter_map(|index| logs_model.row_data(index))
+        .collect::<Vec<_>>();
+    let recent_model = window.get_recent_logs();
+    let Some(recent_model) = recent_model.as_any().downcast_ref::<VecModel<LogLine>>() else {
+        return false;
+    };
+    recent_model.set_vec(recent);
+    true
+}
+
+fn bump_log_generation(window: &AppWindow) {
+    window.set_log_generation(window.get_log_generation().wrapping_add(1));
 }
 
 fn update_tray(tray: &Weak<AppTray>, snapshot: &DaemonSnapshot) {
