@@ -107,7 +107,7 @@ impl LogBuffer {
                 matched.push(false);
             }
         }
-        merged.sort_by(|left, right| left.timestamp.cmp(&right.timestamp));
+        merged.sort_by_key(|left| left.timestamp);
         if merged.len() > LOG_CAP {
             merged = merged.split_off(merged.len() - LOG_CAP);
         }
