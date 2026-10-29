@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot, watch};
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -78,7 +78,14 @@ async fn handle_connection(server: NamedPipeServer, manager: ServiceManager) -> 
                         write_server_message(&writer, &ServerMessage::Event(Box::new(event))).await?;
                     }
                     Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) if subscribed => {
+                        write_server_message(
+                            &writer,
+                            &ServerMessage::Event(Box::new(DaemonEvent::ResyncRequired)),
+                        )
+                        .await?;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -234,6 +241,7 @@ struct ClientInner {
     writer: AsyncMutex<tokio::io::WriteHalf<NamedPipeClient>>,
     pending: Mutex<HashMap<Uuid, oneshot::Sender<Result<ResponseData, ErrorInfo>>>>,
     events: broadcast::Sender<DaemonEvent>,
+    disconnected: watch::Sender<bool>,
 }
 
 impl DaemonClient {
@@ -247,10 +255,12 @@ impl DaemonClient {
                 .context("无法连接 ServerOn daemon")?;
             let (read, write) = tokio::io::split(client);
             let (events, _) = broadcast::channel(2_048);
+            let (disconnected, _) = watch::channel(false);
             let inner = Arc::new(ClientInner {
                 writer: AsyncMutex::new(write),
                 pending: Mutex::new(HashMap::new()),
                 events,
+                disconnected,
             });
             let reader_inner = inner.clone();
             tokio::spawn(async move {
@@ -308,12 +318,20 @@ impl DaemonClient {
     }
 
     pub async fn subscribe(&self) -> Result<broadcast::Receiver<DaemonEvent>> {
+        // Install the local receiver before the server starts forwarding events.
+        // Events queued while the Subscribe request is in flight are therefore
+        // retained for the caller's subsequent snapshot reconciliation.
+        let events = self.inner.events.subscribe();
         self.request(Command::Subscribe).await?;
-        Ok(self.inner.events.subscribe())
+        Ok(events)
     }
 
     pub fn events(&self) -> broadcast::Receiver<DaemonEvent> {
         self.inner.events.subscribe()
+    }
+
+    pub fn disconnected(&self) -> watch::Receiver<bool> {
+        self.inner.disconnected.subscribe()
     }
 }
 
@@ -352,6 +370,7 @@ async fn read_client_messages(read: tokio::io::ReadHalf<NamedPipeClient>, inner:
             }
         }
     }
+    let _ = inner.disconnected.send(true);
     let pending = std::mem::take(&mut *inner.pending.lock().unwrap());
     for (_, sender) in pending {
         let _ = sender.send(Err(ErrorInfo::new("disconnected", "daemon 连接已断开")));

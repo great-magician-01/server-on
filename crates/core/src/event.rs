@@ -17,6 +17,8 @@ pub struct LogEvent {
     pub timestamp: DateTime<Utc>,
     pub stream: LogStream,
     pub message: String,
+    #[serde(default)]
+    pub sequence: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -34,4 +36,6 @@ pub enum DaemonEvent {
         success: bool,
         message: Option<String>,
     },
+    /// The sender dropped events, so incremental state may no longer be complete.
+    ResyncRequired,
 }

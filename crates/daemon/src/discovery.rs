@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::Value;
 use server_on_core::discovery::{
     ContainerInfo, DiscoverySnapshot, DistributionInfo, DockerEngineInfo, DockerEngineState,
@@ -22,10 +22,12 @@ impl DiscoveryManager {
         let mut command = Command::new("wsl.exe");
         command.args(["--list", "--verbose"]);
         crate::command::hide_console(&mut command);
-        let output = command
-            .output()
-            .await
-            .context("无法执行 wsl.exe；请确认已安装 WSL")?;
+        let output = crate::command::output(
+            &mut command,
+            crate::command::DEFAULT_COMMAND_TIMEOUT,
+            "无法执行 wsl.exe；请确认已安装 WSL",
+        )
+        .await?;
         if !output.status.success() {
             bail!("枚举 WSL 发行版失败：{}", output_error(&output));
         }
@@ -213,10 +215,12 @@ async fn wsl_output(distribution: &str, arguments: &[&str]) -> Result<Output> {
         .arg("--")
         .args(arguments);
     crate::command::hide_console(&mut command);
-    command
-        .output()
-        .await
-        .with_context(|| format!("无法在 WSL 发行版 {distribution} 中执行命令"))
+    crate::command::output(
+        &mut command,
+        crate::command::DEFAULT_COMMAND_TIMEOUT,
+        &format!("无法在 WSL 发行版 {distribution} 中执行命令"),
+    )
+    .await
 }
 
 fn classify_docker_error(message: &str) -> DockerEngineState {

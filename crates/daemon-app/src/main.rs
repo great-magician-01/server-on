@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod logging;
+
 use anyhow::Result;
 use server_on_core::paths::AppPaths;
 use server_on_daemon::ipc::serve;
@@ -8,12 +10,15 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let paths = AppPaths::local();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_writer(logging::writer(&paths)?)
+        .with_ansi(false)
         .init();
-    let manager = ServiceManager::new(AppPaths::local())?;
+    let manager = ServiceManager::new(paths)?;
     let lifecycle_manager = manager.clone();
     tokio::spawn(async move {
         lifecycle_manager.recover().await;

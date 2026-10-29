@@ -21,6 +21,7 @@ pub struct SpawnedProcess {
     pub process_group_id: Option<u32>,
     pub job_name: Option<String>,
     pub unit_name: Option<String>,
+    pub recovery_identity: Option<String>,
 }
 
 pub enum ProcessMonitor {
@@ -30,6 +31,7 @@ pub enum ProcessMonitor {
     WslRecovered {
         distribution: String,
         process_group_id: u32,
+        recovery_identity: String,
     },
     Systemd {
         distribution: String,
@@ -45,6 +47,7 @@ pub enum ProcessController {
     Wsl {
         distribution: String,
         process_group_id: u32,
+        recovery_identity: String,
     },
     Systemd {
         distribution: String,
@@ -82,6 +85,7 @@ impl SpawnedProcess {
                         process_group_id: None,
                         job_name: Some(job_name),
                         unit_name: None,
+                        recovery_identity: None,
                     })
                 }
                 #[cfg(not(windows))]
@@ -135,15 +139,29 @@ impl ProcessMonitor {
             Self::WslRecovered {
                 distribution,
                 process_group_id,
-            } => {
-                while wsl_group_alive(distribution, *process_group_id).await {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                recovery_identity,
+            } => loop {
+                match wsl_group_status(distribution, *process_group_id, recovery_identity).await? {
+                    WslGroupStatus::Missing => {
+                        return Ok(ProcessExit {
+                            code: None,
+                            expected: true,
+                        });
+                    }
+                    WslGroupStatus::Matching => {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    WslGroupStatus::Different => {
+                        // The original group is gone and this PGID now belongs
+                        // to an unrelated process group. Treat the managed
+                        // instance as exited without touching the new group.
+                        return Ok(ProcessExit {
+                            code: None,
+                            expected: true,
+                        });
+                    }
                 }
-                Ok(ProcessExit {
-                    code: None,
-                    expected: true,
-                })
-            }
+            },
             Self::Systemd {
                 distribution,
                 unit_name,
@@ -171,19 +189,32 @@ impl ProcessController {
             Self::Wsl {
                 distribution,
                 process_group_id,
+                recovery_identity,
             } => {
-                if !wsl_group_alive(distribution, *process_group_id).await {
-                    return Ok(());
+                match wsl_group_status(distribution, *process_group_id, recovery_identity).await? {
+                    WslGroupStatus::Missing => return Ok(()),
+                    WslGroupStatus::Different => {
+                        // The managed group exited and the PGID was reused.
+                        // There is nothing left to stop, and the new owner must
+                        // not receive a signal.
+                        return Ok(());
+                    }
+                    WslGroupStatus::Matching => {}
                 }
                 signal_wsl_group(distribution, *process_group_id, "TERM").await?;
                 let deadline = tokio::time::Instant::now() + timeout_duration;
                 while tokio::time::Instant::now() < deadline {
-                    if !wsl_group_alive(distribution, *process_group_id).await {
+                    if !wsl_group_alive(distribution, *process_group_id).await? {
                         return Ok(());
                     }
                     tokio::time::sleep(Duration::from_millis(150)).await;
                 }
-                signal_wsl_group(distribution, *process_group_id, "KILL").await
+                match wsl_group_status(distribution, *process_group_id, recovery_identity).await? {
+                    WslGroupStatus::Missing | WslGroupStatus::Different => Ok(()),
+                    WslGroupStatus::Matching => {
+                        signal_wsl_group(distribution, *process_group_id, "KILL").await
+                    }
+                }
             }
             Self::Systemd {
                 distribution,
@@ -282,6 +313,7 @@ async fn make_systemd_process(distribution: &str, unit_name: &str) -> Result<Spa
         process_group_id: None,
         job_name: None,
         unit_name: Some(unit_name.to_owned()),
+        recovery_identity: None,
     })
 }
 
@@ -517,10 +549,19 @@ async fn spawn_wsl_process_group(
         .strip_prefix("__SERVER_ON_PGID__")
         .ok_or_else(|| anyhow!("WSL 进程组标识无效：{:?}", marker.trim()))?
         .parse::<u32>()?;
+    let recovery_identity = match wsl_group_identity(distribution, process_group_id).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            let _ = signal_wsl_group(distribution, process_group_id, "KILL").await;
+            let _ = child.kill().await;
+            return Err(error).context("无法记录 WSL 进程组恢复身份");
+        }
+    };
     Ok(SpawnedProcess {
         controller: ProcessController::Wsl {
             distribution: distribution.to_owned(),
             process_group_id,
+            recovery_identity: recovery_identity.clone(),
         },
         monitor: ProcessMonitor::Wsl(child),
         stdout: Box::new(stdout),
@@ -529,6 +570,7 @@ async fn spawn_wsl_process_group(
         process_group_id: Some(process_group_id),
         job_name: None,
         unit_name: None,
+        recovery_identity: Some(recovery_identity),
     })
 }
 
@@ -546,12 +588,85 @@ async fn signal_wsl_group(distribution: &str, process_group_id: u32, signal: &st
     }
 }
 
-pub async fn wsl_group_alive(distribution: &str, process_group_id: u32) -> bool {
-    let group = format!("-{process_group_id}");
-    wsl_output(distribution, &["kill", "-0", "--", &group])
-        .await
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+pub async fn wsl_group_alive(distribution: &str, process_group_id: u32) -> Result<bool> {
+    let output = wsl_output(distribution, &["ps", "-e", "-o", "pgid="]).await?;
+    if !output.status.success() {
+        bail!("读取 WSL 进程组状态失败：{}", output_error(&output));
+    }
+    Ok(process_group_list_contains(
+        &String::from_utf8_lossy(&output.stdout),
+        process_group_id,
+    ))
+}
+
+fn process_group_list_contains(output: &str, process_group_id: u32) -> bool {
+    output
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .any(|candidate| candidate == process_group_id)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WslGroupStatus {
+    Missing,
+    Matching,
+    Different,
+}
+
+pub async fn wsl_group_status(
+    distribution: &str,
+    process_group_id: u32,
+    expected_identity: &str,
+) -> Result<WslGroupStatus> {
+    if !wsl_group_alive(distribution, process_group_id).await? {
+        return Ok(WslGroupStatus::Missing);
+    }
+    let identity = match wsl_group_identity(distribution, process_group_id).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            // The leader may exit between the PGID probe and reading its
+            // identity. Re-check before treating a normal exit as ambiguity.
+            if !wsl_group_alive(distribution, process_group_id).await? {
+                return Ok(WslGroupStatus::Missing);
+            }
+            return Err(error);
+        }
+    };
+    if identity == expected_identity {
+        Ok(WslGroupStatus::Matching)
+    } else {
+        Ok(WslGroupStatus::Different)
+    }
+}
+
+pub async fn wsl_group_identity(distribution: &str, process_group_id: u32) -> Result<String> {
+    let boot = wsl_output(distribution, &["cat", "/proc/sys/kernel/random/boot_id"]).await?;
+    if !boot.status.success() {
+        bail!("读取 WSL boot ID 失败：{}", output_error(&boot));
+    }
+    let stat_path = format!("/proc/{process_group_id}/stat");
+    let stat = wsl_output(distribution, &["cat", &stat_path]).await?;
+    if !stat.status.success() {
+        bail!("读取 WSL 进程组领导进程身份失败：{}", output_error(&stat));
+    }
+    let boot = String::from_utf8_lossy(&boot.stdout);
+    let boot = boot.trim();
+    if boot.is_empty() {
+        bail!("WSL boot ID 为空");
+    }
+    let stat = String::from_utf8_lossy(&stat.stdout);
+    let started_at = linux_stat_start_time(&stat)?;
+    Ok(format!("{boot}:{started_at}"))
+}
+
+fn linux_stat_start_time(stat: &str) -> Result<&str> {
+    let command_end = stat
+        .rfind(')')
+        .ok_or_else(|| anyhow!("Linux /proc stat 缺少命令名结束标记"))?;
+    stat[command_end + 1..]
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| anyhow!("Linux /proc stat 缺少进程启动时间"))
 }
 
 async fn wsl_output(distribution: &str, arguments: &[&str]) -> Result<std::process::Output> {
@@ -562,10 +677,12 @@ async fn wsl_output(distribution: &str, arguments: &[&str]) -> Result<std::proce
         .arg("--")
         .args(arguments);
     crate::command::hide_console(&mut command);
-    command
-        .output()
-        .await
-        .with_context(|| format!("无法在 WSL 发行版 {distribution} 中执行命令"))
+    crate::command::output(
+        &mut command,
+        crate::command::DEFAULT_COMMAND_TIMEOUT,
+        &format!("无法在 WSL 发行版 {distribution} 中执行命令"),
+    )
+    .await
 }
 
 fn output_error(output: &std::process::Output) -> String {
@@ -581,4 +698,25 @@ fn output_error(output: &std::process::Output) -> String {
         message.trim(),
         output.status.code().unwrap_or(-1)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_group_lookup_requires_an_exact_id() {
+        let output = "  1\n  123\n  1234\n";
+        assert!(process_group_list_contains(output, 123));
+        assert!(!process_group_list_contains(output, 12));
+        assert!(!process_group_list_contains(output, 999));
+    }
+
+    #[test]
+    fn linux_identity_parser_handles_spaces_and_parentheses_in_command_names() {
+        let stat =
+            "123 (bash (test)) S 1 123 123 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 1 0 987654 1000";
+        assert_eq!(linux_stat_start_time(stat).unwrap(), "987654");
+        assert!(linux_stat_start_time("invalid").is_err());
+    }
 }

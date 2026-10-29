@@ -13,6 +13,8 @@ pub struct LogBuffer {
     epoch: i32,
     load_seq: u64,
     loaded_seq: u64,
+    live_during_load: Vec<LogEvent>,
+    history_sequence: u64,
 }
 
 pub struct LogDelta {
@@ -36,18 +38,35 @@ impl LogBuffer {
 
     pub fn begin_load(&mut self) -> u64 {
         self.load_seq = self.load_seq.wrapping_add(1);
+        self.live_during_load.clear();
         self.load_seq
     }
 
     pub fn load_should_apply(&self, load_seq: u64) -> bool {
-        load_seq > self.loaded_seq
+        load_seq == self.load_seq && load_seq > self.loaded_seq
     }
 
     pub fn complete_load(&mut self, load_seq: u64) {
-        self.loaded_seq = load_seq;
+        if load_seq == self.load_seq {
+            self.loaded_seq = load_seq;
+            self.live_during_load.clear();
+        }
+    }
+
+    pub fn cancel_load(&mut self, load_seq: u64) {
+        if load_seq == self.load_seq {
+            self.loaded_seq = load_seq;
+            self.live_during_load.clear();
+        }
     }
 
     pub fn push(&mut self, log: LogEvent) {
+        if log.sequence != 0 && log.sequence <= self.history_sequence {
+            return;
+        }
+        if self.load_seq > self.loaded_seq {
+            self.live_during_load.push(log.clone());
+        }
         self.pending.push(log.clone());
         self.logs.push(log);
         if self.logs.len() > LOG_CAP {
@@ -67,11 +86,33 @@ impl LogBuffer {
         })
     }
 
-    pub fn replace(&mut self, mut logs: Vec<LogEvent>) -> i32 {
-        if logs.len() > LOG_CAP {
-            logs = logs.split_off(logs.len() - LOG_CAP);
+    pub fn replace(&mut self, logs: Vec<LogEvent>) -> i32 {
+        let live = std::mem::take(&mut self.live_during_load);
+        let mut merged = logs;
+        // A historical response may race with live events. Match duplicate
+        // occurrences one-for-one, then retain events absent from the snapshot.
+        // LogEvent contains the daemon timestamp, stream and exact message,
+        // making it a stable identity for this local reconciliation.
+        let mut matched = vec![false; merged.len()];
+        for event in live {
+            if let Some(index) = merged
+                .iter()
+                .enumerate()
+                .find(|(index, candidate)| !matched[*index] && *candidate == &event)
+                .map(|(index, _)| index)
+            {
+                matched[index] = true;
+            } else {
+                merged.push(event);
+                matched.push(false);
+            }
         }
-        self.logs = logs;
+        merged.sort_by_key(|left| left.timestamp);
+        if merged.len() > LOG_CAP {
+            merged = merged.split_off(merged.len() - LOG_CAP);
+        }
+        self.history_sequence = merged.iter().map(|event| event.sequence).max().unwrap_or(0);
+        self.logs = merged;
         self.invalidate()
     }
 
@@ -84,6 +125,8 @@ impl LogBuffer {
 
     pub fn clear(&mut self) -> i32 {
         self.logs.clear();
+        self.live_during_load.clear();
+        self.history_sequence = 0;
         self.load_seq = self.load_seq.wrapping_add(1);
         self.loaded_seq = self.load_seq;
         self.invalidate()
@@ -141,6 +184,7 @@ mod tests {
             timestamp: DateTime::from_timestamp(1_700_000_000 + index, 0).unwrap(),
             stream,
             message: message.into(),
+            sequence: index as u64 + 1,
         }
     }
 
@@ -252,16 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn loads_allow_older_success_until_newer_success_and_clear() {
+    fn loads_only_apply_latest_request_until_clear() {
         let mut buffer = LogBuffer::default();
         let first = buffer.begin_load();
         buffer.invalidate();
         assert!(buffer.load_should_apply(first));
 
         let second = buffer.begin_load();
-        assert!(buffer.load_should_apply(first));
-        buffer.complete_load(first);
         assert!(!buffer.load_should_apply(first));
+        assert!(buffer.load_should_apply(second));
+        buffer.complete_load(first);
         assert!(buffer.load_should_apply(second));
 
         buffer.complete_load(second);
@@ -269,5 +313,63 @@ mod tests {
         assert!(!buffer.load_should_apply(second));
         buffer.clear();
         assert!(!buffer.load_should_apply(second));
+    }
+
+    #[test]
+    fn history_load_preserves_live_events_and_deduplicates_overlap() {
+        let mut buffer = LogBuffer::default();
+        let load = buffer.begin_load();
+        let duplicated = event(1, LogStream::Stdout, "already in history");
+        let live = event(2, LogStream::Stderr, "arrived after the snapshot");
+        buffer.push(duplicated.clone());
+        buffer.push(live.clone());
+
+        buffer.replace(vec![event(0, LogStream::System, "older"), duplicated]);
+        buffer.complete_load(load);
+
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(
+            buffer
+                .logs()
+                .iter()
+                .map(|log| log.message.as_str())
+                .collect::<Vec<_>>(),
+            ["older", "already in history", "arrived after the snapshot"]
+        );
+    }
+
+    #[test]
+    fn queued_events_already_covered_by_history_are_ignored_by_sequence() {
+        let mut buffer = LogBuffer::default();
+        buffer.replace(vec![
+            event(0, LogStream::Stdout, "history-1"),
+            event(1, LogStream::Stdout, "history-2"),
+        ]);
+
+        buffer.push(event(1, LogStream::Stdout, "queued duplicate"));
+        buffer.push(event(2, LogStream::Stdout, "new live event"));
+
+        assert_eq!(
+            buffer
+                .logs()
+                .iter()
+                .map(|log| log.message.as_str())
+                .collect::<Vec<_>>(),
+            ["history-1", "history-2", "new live event"]
+        );
+    }
+
+    #[test]
+    fn history_load_matches_duplicate_events_one_for_one() {
+        let mut buffer = LogBuffer::default();
+        buffer.begin_load();
+        let duplicate = event(1, LogStream::Stdout, "same");
+        buffer.push(duplicate.clone());
+        buffer.push(duplicate.clone());
+        buffer.push(duplicate.clone());
+
+        buffer.replace(vec![duplicate.clone(), duplicate]);
+
+        assert_eq!(buffer.len(), 3);
     }
 }

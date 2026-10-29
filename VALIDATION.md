@@ -1,6 +1,6 @@
 # 验证记录
 
-更新时间：2026-10-28。
+更新时间：2026-10-29。
 
 ## 自动化验证
 
@@ -25,6 +25,13 @@ cargo clippy --workspace --offline -- -D warnings
 - 日志轮转和最近日志读取。
 - 本地 TCP 健康检查。
 - 本地 HTTP 健康检查及状态码判断（Windows `curl.exe`）。
+- 活动操作期间拒绝编辑和删除、监控失败保留实例、手动停止不触发异常重启。
+- WSL 进程组身份解析、旧恢复状态兼容及不存在的 Windows PID 恢复。
+- 外部命令超时和 daemon 诊断日志有界轮转。
+- GUI 历史/实时日志合并、过期加载隔离、配置保存代际及 Shell 严格校验。
+- daemon 日志序号跨重启单调递增，WSL 恢复与停止持续校验 PGID 身份。
+
+2026-10-29 可靠性修复后，`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` 和版本一致性检查通过，共 45 个测试通过。使用独立 target 目录的 `cargo build --workspace --release --locked` 也已通过。
 
 ## 真实环境验证
 
@@ -113,4 +120,4 @@ cargo clippy --workspace --offline -- -D warnings
 
 ## 尚未作为本次验证结论的内容
 
-配置导入导出、自动更新和长时间稳定性测试仍属于后续产品工作，不在上述“全部产品工作完成”的含义之内。
+配置导入导出、自动更新和长时间稳定性测试仍属于后续产品工作，不在上述“全部产品工作完成”的含义之内。本轮可靠性修复已通过自动化回归，但未重新执行真实 WSL/daemon 强制重启、GUI 断线重连和安装卸载冒烟；这些场景仍需在发布前验证。
